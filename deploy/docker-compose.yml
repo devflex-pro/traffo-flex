@@ -1,0 +1,352 @@
+services:
+  redpanda-0:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.1.8
+    container_name: traffoflex-redpanda-0
+    command:
+      - redpanda
+      - start
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - "0"
+      - --check=false
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda-0:9092,external://localhost:19092
+      - --rpc-addr
+      - redpanda-0:33145
+      - --advertise-rpc-addr
+      - redpanda-0:33145
+      - --set
+      - redpanda.auto_create_topics_enabled=false
+    ports:
+      - "19092:19092"
+      - "19644:9644"
+    volumes:
+      - redpanda_0_data:/var/lib/redpanda/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - rpk cluster info --brokers redpanda-0:9092 >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  redpanda-1:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.1.8
+    container_name: traffoflex-redpanda-1
+    command:
+      - redpanda
+      - start
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - "1"
+      - --check=false
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:29092
+      - --advertise-kafka-addr
+      - internal://redpanda-1:9092,external://localhost:29092
+      - --rpc-addr
+      - redpanda-1:33145
+      - --advertise-rpc-addr
+      - redpanda-1:33145
+      - --seeds
+      - redpanda-0:33145
+      - --set
+      - redpanda.auto_create_topics_enabled=false
+    ports:
+      - "29092:29092"
+      - "29644:9644"
+    volumes:
+      - redpanda_1_data:/var/lib/redpanda/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - rpk cluster info --brokers redpanda-1:9092 >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+
+  redpanda-2:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.1.8
+    container_name: traffoflex-redpanda-2
+    command:
+      - redpanda
+      - start
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - "2"
+      - --check=false
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:39092
+      - --advertise-kafka-addr
+      - internal://redpanda-2:9092,external://localhost:39092
+      - --rpc-addr
+      - redpanda-2:33145
+      - --advertise-rpc-addr
+      - redpanda-2:33145
+      - --seeds
+      - redpanda-0:33145
+      - --set
+      - redpanda.auto_create_topics_enabled=false
+    ports:
+      - "39092:39092"
+      - "39644:9644"
+    volumes:
+      - redpanda_2_data:/var/lib/redpanda/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - rpk cluster info --brokers redpanda-2:9092 >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v3.7.2
+    container_name: traffoflex-redpanda-console
+    environment:
+      - KAFKA_BROKERS=redpanda-0:9092,redpanda-1:9092,redpanda-2:9092
+    ports:
+      - "8085:8080"
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+      redpanda-1:
+        condition: service_healthy
+      redpanda-2:
+        condition: service_healthy
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.1.8
+    container_name: traffoflex-redpanda-init
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        set -eu
+        brokers="redpanda-0:9092,redpanda-1:9092,redpanda-2:9092"
+        for topic in \
+          traffoflex.click_events \
+          traffoflex.conversion_events \
+          traffoflex.postback_log_events \
+          traffoflex.trafficback_events \
+          traffoflex.destination_health_events
+        do
+          if rpk topic describe "$$topic" -X brokers="$$brokers" >/dev/null 2>&1
+          then
+            echo "topic $$topic already exists"
+          else
+            rpk topic create "$$topic" \
+              -X brokers="$$brokers" \
+              -p 12 \
+              -r 3 \
+              -c retention.ms=604800000 \
+              -c cleanup.policy=delete
+          fi
+        done
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+      redpanda-1:
+        condition: service_healthy
+      redpanda-2:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:7
+    container_name: traffoflex-mongo
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: traffoflex-clickhouse
+    environment:
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-traffoflex}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DATABASE:-traffoflex}
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+      redpanda-1:
+        condition: service_healthy
+      redpanda-2:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8123/ping | grep -q Ok.
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  api-service:
+    build:
+      context: ..
+      dockerfile: apps/api-service/Dockerfile
+    container_name: traffoflex-api-service
+    env_file:
+      - path: ../.env
+        required: false
+    ports:
+      - "8070:8070"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8070/readyz | grep -q ready
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  traffic-service:
+    build:
+      context: ..
+      dockerfile: apps/traffic-service/Dockerfile
+    container_name: traffoflex-traffic-service
+    env_file:
+      - path: ../.env
+        required: false
+    ports:
+      - "8080:8080"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redpanda-0:
+        condition: service_healthy
+      redpanda-1:
+        condition: service_healthy
+      redpanda-2:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8080/readyz | grep -q ready
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  postback-service:
+    build:
+      context: ..
+      dockerfile: apps/postback-service/Dockerfile
+    container_name: traffoflex-postback-service
+    env_file:
+      - path: ../.env
+        required: false
+    ports:
+      - "8081:8081"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redpanda-0:
+        condition: service_healthy
+      redpanda-1:
+        condition: service_healthy
+      redpanda-2:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:8081/readyz | grep -q ready
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  admin-frontend:
+    build:
+      context: ..
+      dockerfile: apps/admin-frontend/Dockerfile
+    container_name: traffoflex-admin-frontend
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8070
+    ports:
+      - "5173:5173"
+    depends_on:
+      api-service:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://localhost:5173/ | grep -q TraffoFlex
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  redpanda_0_data:
+  redpanda_1_data:
+  redpanda_2_data:
+  mongo_data:
+  clickhouse_data:

@@ -1,0 +1,1 @@
+Destination healthcheck package placeholder.
