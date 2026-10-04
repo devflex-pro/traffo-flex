@@ -418,6 +418,7 @@ export const api = {
   ingestionErrors: () => request<IngestionErrorsReport>("/api/reports/ingestion-errors"),
   campaigns: (filters: ListFilters = {}) =>
     request<ListResponse<Campaign>>(`/api/campaigns${queryString(filters)}`),
+  campaign: (id: string) => request<Campaign>(`/api/campaigns/${id}`),
   createCampaign: (data: CampaignRequest) =>
     request<Campaign>(
       "/api/campaigns",

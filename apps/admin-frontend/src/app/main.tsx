@@ -20,7 +20,8 @@ import {
   Navigate,
   Route,
   Routes,
-  useNavigate
+  useNavigate,
+  useParams
 } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { z } from "zod";
@@ -462,6 +463,7 @@ function Layout({ onLogout, actingAs, onActAs }: {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/campaigns" element={<CampaignsPage />} />
+            <Route path="/campaigns/:campaignId/streams" element={<CampaignStreamsPage />} />
             <Route path="/destinations" element={<DestinationsPage />} />
             <Route path="/postbacks" element={<PostbacksPage />} />
             <Route path="/health-history" element={<HealthHistoryPage />} />
@@ -738,7 +740,7 @@ function CampaignLinkBuilder({ campaign, baseURL }: { campaign: Campaign; baseUR
 function CampaignsPage() {
   const queryClient = useQueryClient();
   const syncRouting = useRoutingSync();
-  const [selectedID, setSelectedID] = useState<string | null>(null);
+  const navigate = useNavigate();
   const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
   const [linkCampaign, setLinkCampaign] = useState<Campaign | null>(null);
   const [campaignFormOpen, setCampaignFormOpen] = useState(false);
@@ -751,7 +753,6 @@ function CampaignsPage() {
     queryKey: ["campaigns"],
     queryFn: () => api.campaigns()
   });
-  const selectedCampaign = campaigns.data?.items.find((campaign) => campaign.id === selectedID) ?? null;
   const columns = useMemo<ColumnDef<Campaign>[]>(
     () => [
       { header: "Name", accessorKey: "name" },
@@ -778,7 +779,7 @@ function CampaignsPage() {
               ariaLabel={`View streams for ${row.original.name}`}
               icon="streams"
               label="View streams"
-              onClick={() => setSelectedID(row.original.id)}
+              onClick={() => navigate(`/campaigns/${encodeURIComponent(row.original.id)}/streams`)}
             />
             <ActionIconButton
               ariaLabel={`Edit campaign ${row.original.name}`}
@@ -793,7 +794,7 @@ function CampaignsPage() {
         )
       }
     ],
-    [trackerBaseURL]
+    [navigate, trackerBaseURL]
   );
 
   const createCampaign = useMutation({
@@ -891,18 +892,37 @@ function CampaignsPage() {
           )
         ) : null}
       </Modal>
-      <Panel title="Streams" className="mt-4">
-        {selectedCampaign ? (
-          <StreamsManager campaign={selectedCampaign} />
-        ) : (
-          <p className="text-sm text-zinc-500">Select a campaign to manage streams.</p>
-        )}
-      </Panel>
       <DangerList
         items={campaigns.data?.items ?? []}
         label={(campaign) => campaign.name}
         onDelete={(campaign) => deleteCampaign.mutate(campaign.id)}
       />
+    </Page>
+  );
+}
+
+function CampaignStreamsPage() {
+  const { campaignId } = useParams<{ campaignId: string }>();
+  const campaign = useQuery({
+    queryKey: ["campaign", campaignId],
+    queryFn: () => api.campaign(campaignId ?? ""),
+    enabled: Boolean(campaignId)
+  });
+
+  return (
+    <Page title="Streams">
+      <Link className="button-secondary mb-4 inline-flex" to="/campaigns">
+        ← Back to campaigns
+      </Link>
+      {campaign.isPending ? <p className="text-sm text-zinc-500">Loading campaign…</p> : null}
+      {campaign.isError ? (
+        <p className="text-sm text-red-700">Could not load campaign: {campaign.error.message}</p>
+      ) : null}
+      {campaign.data ? (
+        <Panel title={campaign.data.name}>
+          <StreamsManager campaign={campaign.data} />
+        </Panel>
+      ) : null}
     </Page>
   );
 }
