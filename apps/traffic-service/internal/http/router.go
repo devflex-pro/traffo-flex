@@ -234,6 +234,7 @@ func NewRouterWithOptions(
 			r *http.Request,
 		) {
 			if err := store.Reload(r.Context()); err != nil {
+				log.Warn("campaign cache reload failed", "error", err)
 				if writeErr := httpx.Error(
 					w,
 					http.StatusInternalServerError,

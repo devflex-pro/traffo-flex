@@ -28,6 +28,43 @@ func NewMongoLoader(db *mongo.Database) *MongoLoader {
 	}
 }
 
+func (l *MongoLoader) GetDestination(
+	ctx context.Context,
+	id string,
+) (
+	models.Destination,
+	error,
+) {
+	var raw bson.M
+	err := l.destinations.FindOne(
+		ctx,
+		bson.M{"id": id},
+	).Decode(&raw)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return models.Destination{}, ErrDestinationNotFound
+	}
+	if err != nil {
+		return models.Destination{}, err
+	}
+	destination, err := decodeDocument[models.Destination](raw)
+	if err != nil {
+		return models.Destination{}, err
+	}
+	state, found, err := healthstate.LoadState(
+		ctx,
+		l.db,
+		id,
+	)
+	if err != nil {
+		return models.Destination{}, err
+	}
+	if found && state.Current.Valid() {
+		destination.HealthStatus = state.Current
+		destination.UpdatedAt = state.UpdatedAt
+	}
+	return destination, nil
+}
+
 func (l *MongoLoader) Load(ctx context.Context) (
 	[]CampaignConfig,
 	error,
@@ -57,7 +94,7 @@ func (l *MongoLoader) Load(ctx context.Context) (
 		destinationFilter := bson.M{}
 		streamFilter := bson.M{
 			"campaign_id": campaign.ID,
-			"status": string(models.StatusActive),
+			"status":      string(models.StatusActive),
 		}
 		if campaign.OwnerID != "" {
 			destinationFilter["owner_id"] = campaign.OwnerID

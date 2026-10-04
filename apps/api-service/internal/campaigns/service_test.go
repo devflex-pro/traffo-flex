@@ -34,7 +34,7 @@ func TestServiceCRUD(t *testing.T) {
 	created, err := service.Create(ctx, CampaignRequest{
 		Name:   "Campaign One",
 		Slug:   "campaign-one",
-		Status: models.StatusActive,
+		Status: models.StatusPaused,
 	})
 	if err != nil {
 		t.Fatalf(
@@ -158,6 +158,7 @@ func TestServiceSavesAndUpdatesTrafficback(t *testing.T) {
 		CampaignRequest{
 			Name:        "Trafficback campaign",
 			Slug:        "trafficback-campaign",
+			Status:      models.StatusPaused,
 			Trafficback: &models.TrafficbackConfig{},
 		},
 	)
@@ -172,6 +173,45 @@ func TestServiceSavesAndUpdatesTrafficback(t *testing.T) {
 			"trafficback remained enabled: %#v",
 			updated.TrafficbackConfig,
 		)
+	}
+}
+
+func TestActiveCampaignRequiresTrafficback(t *testing.T) {
+	service := NewService(NewMemoryRepository())
+	ctx := context.Background()
+	_, err := service.Create(
+		ctx,
+		CampaignRequest{
+			Name:   "No fallback",
+			Slug:   "no-fallback",
+			Status: models.StatusActive,
+		},
+	)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("create active campaign without trafficback: %v", err)
+	}
+	created, err := service.Create(
+		ctx,
+		CampaignRequest{
+			Name:   "Paused campaign",
+			Slug:   "paused-campaign",
+			Status: models.StatusPaused,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Update(
+		ctx,
+		created.ID,
+		CampaignRequest{
+			Name:   created.Name,
+			Slug:   created.Slug,
+			Status: models.StatusActive,
+		},
+	)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("activate campaign without trafficback: %v", err)
 	}
 }
 

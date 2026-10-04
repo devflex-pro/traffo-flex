@@ -71,7 +71,7 @@ func TestCampaignsRoute(t *testing.T) {
 func TestCampaignCRUDRouteFlow(t *testing.T) {
 	router := NewRouter(testLogger())
 
-	createBody := []byte(`{"name":"Campaign One","slug":"campaign-one","status":"active"}`)
+	createBody := []byte(`{"name":"Campaign One","slug":"campaign-one","status":"paused"}`)
 	createRR := httptest.NewRecorder()
 	router.ServeHTTP(
 		createRR,

@@ -125,6 +125,13 @@ func (s *Service) Create(
 	if err := validateRequest(req); err != nil {
 		return models.Campaign{}, err
 	}
+	trafficback := normalizeTrafficback(req.Trafficback)
+	if err := validateActiveTrafficback(
+		req.Status,
+		trafficback,
+	); err != nil {
+		return models.Campaign{}, err
+	}
 
 	now := time.Now().UTC()
 	return s.repo.Create(ctx, models.Campaign{
@@ -135,7 +142,7 @@ func (s *Service) Create(
 		TrafficSourceID:   strings.TrimSpace(req.TrafficSourceID),
 		Currency:          strings.ToUpper(strings.TrimSpace(req.Currency)),
 		DefaultAction:     strings.TrimSpace(req.DefaultAction),
-		TrafficbackConfig: normalizeTrafficback(req.Trafficback),
+		TrafficbackConfig: trafficback,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	})
@@ -181,6 +188,12 @@ func (s *Service) Update(
 	existing.DefaultAction = strings.TrimSpace(req.DefaultAction)
 	if req.Trafficback != nil {
 		existing.TrafficbackConfig = normalizeTrafficback(req.Trafficback)
+	}
+	if err := validateActiveTrafficback(
+		existing.Status,
+		existing.TrafficbackConfig,
+	); err != nil {
+		return models.Campaign{}, err
 	}
 	existing.UpdatedAt = time.Now().UTC()
 
@@ -258,4 +271,17 @@ func normalizeTrafficback(config *models.TrafficbackConfig) models.TrafficbackCo
 	result := *config
 	result.URL = strings.TrimSpace(result.URL)
 	return result
+}
+
+func validateActiveTrafficback(
+	status models.Status,
+	config models.TrafficbackConfig,
+) error {
+	if status == models.StatusActive && (!config.Enabled || config.URL == "") {
+		return errors.Join(
+			ErrInvalidInput,
+			errors.New("active campaign requires a trafficback URL"),
+		)
+	}
+	return nil
 }

@@ -696,7 +696,7 @@ function CampaignForm({
     defaultValues: {
       name: initial?.name ?? "",
       slug: initial?.slug ?? "",
-      status: initial?.status ?? "active",
+      status: initial?.status ?? "paused",
       traffic_source_id: initial?.traffic_source_id ?? "",
       currency: initial?.currency ?? "USD",
       default_action: initial?.default_action ?? "",
@@ -2762,7 +2762,10 @@ const campaignSchema = z.object({
     (config) => !config.enabled || (Number.isInteger(config.max_depth) && config.max_depth >= 1 && config.max_depth <= 10),
     "Maximum trafficback depth must be between 1 and 10"
   )
-});
+}).refine(
+  (campaign) => campaign.status !== "active" || campaign.trafficback_config.enabled,
+  "Active campaign requires a trafficback URL"
+);
 
 const streamSchema = z.object({
   name: z.string().min(1),

@@ -90,8 +90,9 @@ func main() {
 		}
 	}()
 
+	loader := cache.NewMongoLoader(mongoClient.Database(cfg.MongoDatabase))
 	store := cache.NewPersistentStore(
-		cache.NewMongoLoader(mongoClient.Database(cfg.MongoDatabase)),
+		loader,
 		cache.NewSnapshotFile(cfg.RoutingSnapshotPath),
 	)
 	initializeRouting(
@@ -178,6 +179,7 @@ func main() {
 			Failures: cfg.HealthcheckFailures,
 			Recovery: cfg.HealthcheckRecovery,
 		},
+		loader,
 	)
 	healthcheck.NewWorker(
 		log,

@@ -38,8 +38,16 @@ type probeState struct {
 	successes int
 }
 
+type DestinationReader interface {
+	GetDestination(
+		ctx context.Context,
+		id string,
+	) (models.Destination, error)
+}
+
 type Service struct {
 	cache      *cache.Store
+	reader     DestinationReader
 	events     trafficevents.DestinationHealthSink
 	client     *http.Client
 	repo       healthstate.Repository
@@ -86,6 +94,7 @@ func NewServiceWithThresholds(
 	client *http.Client,
 	repo healthstate.Repository,
 	thresholds Thresholds,
+	readers ...DestinationReader,
 ) *Service {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Second}
@@ -100,13 +109,17 @@ func NewServiceWithThresholds(
 	if thresholds.Recovery <= 0 {
 		thresholds.Recovery = 2
 	}
-	return &Service{
+	service := &Service{
 		cache:      store,
 		events:     events,
 		client:     &clientCopy,
 		repo:       repo,
 		thresholds: thresholds,
 	}
+	if len(readers) > 0 {
+		service.reader = readers[0]
+	}
+	return service
 }
 
 func (s *Service) Trigger(
@@ -124,6 +137,12 @@ func (s *Service) Trigger(
 	streak.mu.Lock()
 	defer streak.mu.Unlock()
 	destination, err := s.cache.GetDestination(destinationID)
+	if errors.Is(err, cache.ErrDestinationNotFound) && s.reader != nil {
+		destination, err = s.reader.GetDestination(
+			ctx,
+			destinationID,
+		)
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -198,17 +217,22 @@ func (s *Service) Trigger(
 	if errorMessage == "" && (statusCode < 200 || statusCode >= 300) {
 		errorMessage = fmt.Sprintf("probe returned HTTP %d", statusCode)
 	}
-	destination, err = s.cache.UpdateDestinationHealth(
+	updatedDestination, err := s.cache.UpdateDestinationHealth(
 		destination.ID,
 		current,
 		now,
 	)
-	if err != nil {
+	if errors.Is(err, cache.ErrDestinationNotFound) {
+		destination.HealthStatus = current
+		destination.UpdatedAt = now
+	} else if err != nil {
 		return Result{}, err
+	} else {
+		destination = updatedDestination
 	}
 	state := healthstate.State{
 		DestinationID: destination.ID,
-		OwnerID: destination.OwnerID,
+		OwnerID:       destination.OwnerID,
 		Previous:      previous,
 		Current:       current,
 		Error:         errorMessage,
@@ -228,7 +252,7 @@ func (s *Service) Trigger(
 			ctx,
 			models.DestinationHealthEvent{
 				DestinationID: destination.ID,
-				OwnerID: destination.OwnerID,
+				OwnerID:       destination.OwnerID,
 				Previous:      previous,
 				Current:       current,
 				Error:         errorMessage,

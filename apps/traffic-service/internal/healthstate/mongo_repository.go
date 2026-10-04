@@ -129,6 +129,33 @@ func LoadStates(
 	return states, nil
 }
 
+func LoadState(
+	ctx context.Context,
+	db *mongo.Database,
+	destinationID string,
+) (
+	State,
+	bool,
+	error,
+) {
+	var raw bson.M
+	err := db.Collection("destination_health").FindOne(
+		ctx,
+		bson.M{"_id": destinationID},
+	).Decode(&raw)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return State{}, false, nil
+	}
+	if err != nil {
+		return State{}, false, err
+	}
+	state, err := decodeDocument[State](raw)
+	if err != nil {
+		return State{}, false, err
+	}
+	return state, true, nil
+}
+
 func encodeDocument(item any) (
 	bson.M,
 	error,
