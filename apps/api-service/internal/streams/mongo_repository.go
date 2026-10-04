@@ -29,6 +29,13 @@ func NewMongoRepository(db *mongo.Database) *MongoRepository {
 	}
 }
 
+func (r *MongoRepository) ListAll(ctx context.Context) (
+	[]models.Stream,
+	error,
+) {
+	return r.store.List(ctx)
+}
+
 func (r *MongoRepository) ListByCampaign(
 	ctx context.Context,
 	campaignID string,

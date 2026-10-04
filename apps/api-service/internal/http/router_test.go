@@ -35,6 +35,34 @@ func TestHealthAndReady(t *testing.T) {
 	)
 }
 
+func TestClientConfigReturnsTrackerBaseURL(t *testing.T) {
+	router := NewRouterWithOptions(
+		testLogger(),
+		Options{TrackerPublicURL: "https://go.example.com"},
+	)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(
+		response,
+		httptest.NewRequest(
+			stdhttp.MethodGet,
+			"/api/client-config",
+			nil,
+		),
+	)
+	if response.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	var payload struct {
+		TrackerBaseURL string `json:"tracker_base_url"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.TrackerBaseURL != "https://go.example.com" {
+		t.Fatalf("tracker URL = %q", payload.TrackerBaseURL)
+	}
+}
+
 func TestReadyUnavailable(t *testing.T) {
 	router := NewRouterWithReadyChecker(testLogger(), httpx.ReadyFunc(func(r *stdhttp.Request) error {
 		return errors.New("dependency unavailable")
@@ -66,12 +94,19 @@ func TestCampaignsRoute(t *testing.T) {
 		"/api/campaigns",
 		stdhttp.StatusOK,
 	)
+	assertStatus(
+		t,
+		router,
+		stdhttp.MethodGet,
+		"/api/campaigns/structure",
+		stdhttp.StatusOK,
+	)
 }
 
 func TestCampaignCRUDRouteFlow(t *testing.T) {
 	router := NewRouter(testLogger())
 
-	createBody := []byte(`{"name":"Campaign One","slug":"campaign-one","status":"active"}`)
+	createBody := []byte(`{"name":"Campaign One","slug":"campaign-one","status":"paused"}`)
 	createRR := httptest.NewRecorder()
 	router.ServeHTTP(
 		createRR,
@@ -110,6 +145,15 @@ func TestCampaignCRUDRouteFlow(t *testing.T) {
 		"/api/campaigns/"+created.ID,
 		stdhttp.StatusOK,
 	)
+	trackingBody := []byte(`{"tracking_params":[{"key":"sub1","value":"[ZONE_ID]"},{"key":"utm_content","value":"[CLICK_ID]"}]}`)
+	assertStatusWithBody(
+		t,
+		router,
+		stdhttp.MethodPut,
+		"/api/campaigns/"+created.ID+"/tracking-params",
+		trackingBody,
+		stdhttp.StatusOK,
+	)
 
 	updateBody := []byte(`{"name":"Campaign Updated","slug":"campaign-updated","status":"paused"}`)
 	assertStatusWithBody(
@@ -118,6 +162,66 @@ func TestCampaignCRUDRouteFlow(t *testing.T) {
 		stdhttp.MethodPut,
 		"/api/campaigns/"+created.ID,
 		updateBody,
+		stdhttp.StatusOK,
+	)
+	getRR := httptest.NewRecorder()
+	router.ServeHTTP(
+		getRR,
+		httptest.NewRequest(
+			stdhttp.MethodGet,
+			"/api/campaigns/"+created.ID,
+			nil,
+		),
+	)
+	var got struct {
+		TrackingParams []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"tracking_params"`
+	}
+	if err := json.NewDecoder(getRR.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.TrackingParams) != 2 || got.TrackingParams[1].Value != "[CLICK_ID]" {
+		t.Fatalf("tracking params lost after campaign update: %#v", got.TrackingParams)
+	}
+	assertStatus(
+		t,
+		router,
+		stdhttp.MethodDelete,
+		"/api/campaigns/"+created.ID,
+		stdhttp.StatusBadRequest,
+	)
+	archiveBody := []byte(`{"name":"Campaign Updated","slug":"campaign-updated","status":"archived"}`)
+	assertStatusWithBody(
+		t,
+		router,
+		stdhttp.MethodPut,
+		"/api/campaigns/"+created.ID,
+		archiveBody,
+		stdhttp.StatusOK,
+	)
+	assertStatusWithBody(
+		t,
+		router,
+		stdhttp.MethodPut,
+		"/api/campaigns/"+created.ID,
+		updateBody,
+		stdhttp.StatusOK,
+	)
+	assertStatus(
+		t,
+		router,
+		stdhttp.MethodDelete,
+		"/api/campaigns/"+created.ID,
+		stdhttp.StatusBadRequest,
+	)
+	assertStatusWithBody(
+		t,
+		router,
+		stdhttp.MethodPut,
+		"/api/campaigns/"+created.ID,
+		archiveBody,
 		stdhttp.StatusOK,
 	)
 	assertStatus(

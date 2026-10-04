@@ -17,6 +17,26 @@ func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{streams: make(map[string]models.Stream)}
 }
 
+func (r *MemoryRepository) ListAll(ctx context.Context) (
+	[]models.Stream,
+	error,
+) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	items := make(
+		[]models.Stream,
+		0,
+		len(r.streams),
+	)
+	for _, stream := range r.streams {
+		items = append(items, stream)
+	}
+	return items, nil
+}
+
 func (r *MemoryRepository) ListByCampaign(
 	ctx context.Context,
 	campaignID string,

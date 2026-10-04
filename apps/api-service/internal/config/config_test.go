@@ -13,6 +13,25 @@ func TestLoadDefaultsAreValid(t *testing.T) {
 	}
 }
 
+func TestTrackerPublicURLValidation(t *testing.T) {
+	cfg := Load()
+	cfg.TrackerPublicURL = "https://go.example.com/path"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected tracker URL with a path to be rejected")
+	}
+	cfg.TrackerPublicURL = "http://go.example.com"
+	cfg.AuthEnv = "production"
+	cfg.AuthResendAPIKey = "re_test"
+	cfg.AuthEmailFrom = "noreply@example.com"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected insecure production tracker URL to be rejected")
+	}
+	cfg.TrackerPublicURL = "https://go.example.com"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid production tracker URL rejected: %v", err)
+	}
+}
+
 func TestValidateRejectsInvalidURLs(t *testing.T) {
 	cfg := Load()
 	cfg.MongoURI = "localhost:27017"

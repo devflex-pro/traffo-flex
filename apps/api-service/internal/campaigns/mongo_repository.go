@@ -3,6 +3,7 @@ package campaigns
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/devflex/traffoflex/apps/api-service/internal/mongostore"
 	"github.com/devflex/traffoflex/apps/api-service/internal/scope"
@@ -12,8 +13,9 @@ import (
 )
 
 type MongoRepository struct {
-	store   *mongostore.Store[models.Campaign]
-	sources *mongo.Collection
+	store      *mongostore.Store[models.Campaign]
+	collection *mongo.Collection
+	sources    *mongo.Collection
 }
 
 func NewMongoRepository(db *mongo.Database) *MongoRepository {
@@ -23,7 +25,8 @@ func NewMongoRepository(db *mongo.Database) *MongoRepository {
 			ErrInvalidInput,
 			ErrNotFound,
 		),
-		sources: db.Collection("traffic_sources"),
+		collection: db.Collection("campaigns"),
+		sources:    db.Collection("traffic_sources"),
 	}
 }
 
@@ -78,6 +81,38 @@ func (r *MongoRepository) Update(
 		ctx,
 		campaign.ID,
 		campaign,
+	)
+}
+
+func (r *MongoRepository) UpdateTrackingParams(
+	ctx context.Context,
+	id string,
+	params []models.TrackingParam,
+) (
+	models.Campaign,
+	error,
+) {
+	filter := bson.M{"id": id}
+	if ownerID := scope.OwnerID(ctx); ownerID != "" {
+		filter["owner_id"] = ownerID
+	}
+	result, err := r.collection.UpdateOne(
+		ctx,
+		filter,
+		bson.M{"$set": bson.M{
+			"tracking_params": params,
+			"updated_at":      time.Now().UTC(),
+		}},
+	)
+	if err != nil {
+		return models.Campaign{}, err
+	}
+	if result.MatchedCount == 0 {
+		return models.Campaign{}, ErrNotFound
+	}
+	return r.store.Get(
+		ctx,
+		id,
 	)
 }
 

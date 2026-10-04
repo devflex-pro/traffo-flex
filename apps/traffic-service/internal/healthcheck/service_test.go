@@ -10,8 +10,108 @@ import (
 	"testing"
 
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/cache"
+	"github.com/devflex/traffoflex/apps/traffic-service/internal/healthstate"
 	"github.com/devflex/traffoflex/packages/go-shared/models"
 )
+
+type destinationReaderFunc func(context.Context, string) (models.Destination, error)
+
+func (f destinationReaderFunc) GetDestination(
+	ctx context.Context,
+	id string,
+) (models.Destination, error) {
+	return f(ctx, id)
+}
+
+type healthStateRecorder struct {
+	states []healthstate.State
+}
+
+func (r *healthStateRecorder) Upsert(
+	_ context.Context,
+	state healthstate.State,
+) error {
+	r.states = append(r.states, state)
+	return nil
+}
+
+func TestManualProbeFindsDestinationOutsideActiveCache(t *testing.T) {
+	store := cache.NewStore(cache.StaticLoader{})
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    r,
+		}, nil
+	})}
+	recorder := &healthStateRecorder{}
+	reader := destinationReaderFunc(func(_ context.Context, id string) (models.Destination, error) {
+		if id != "dst_new" {
+			return models.Destination{}, cache.ErrDestinationNotFound
+		}
+		return models.Destination{
+			ID:             id,
+			OwnerID:        "user_1",
+			URL:            "https://destination.example/offer?cid={click_id}",
+			HealthcheckURL: "https://destination.example/health",
+			HealthStatus:   models.HealthUnknown,
+		}, nil
+	})
+	service := NewServiceWithThresholds(
+		store,
+		nil,
+		client,
+		recorder,
+		Thresholds{Failures: 3, Recovery: 2},
+		reader,
+	)
+	result, err := service.Trigger(
+		context.Background(),
+		"dst_new",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != models.HealthHealthy || calls.Load() != 1 {
+		t.Fatalf("unexpected probe: %+v, calls=%d", result, calls.Load())
+	}
+	if len(recorder.states) != 1 || recorder.states[0].OwnerID != "user_1" || recorder.states[0].Current != models.HealthHealthy {
+		t.Fatalf("health state was not persisted: %+v", recorder.states)
+	}
+}
+
+func TestManualProbeOfUncachedMacroDestinationReturnsReason(t *testing.T) {
+	store := cache.NewStore(cache.StaticLoader{})
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return nil, errors.New("unexpected network request")
+	})}
+	reader := destinationReaderFunc(func(_ context.Context, id string) (models.Destination, error) {
+		return models.Destination{
+			ID:           id,
+			URL:          "https://destination.example/offer?cid={click_id}",
+			HealthStatus: models.HealthUnknown,
+		}, nil
+	})
+	service := NewServiceWithThresholds(
+		store,
+		nil,
+		client,
+		nil,
+		Thresholds{},
+		reader,
+	)
+	result, err := service.Trigger(
+		context.Background(),
+		"dst_new",
+	)
+	if err != nil || !strings.Contains(result.Error, "healthcheck_url") || calls.Load() != 0 {
+		t.Fatalf("unexpected probe: %+v, err=%v, calls=%d", result, err, calls.Load())
+	}
+}
 
 func TestServiceTrigger(t *testing.T) {
 	client := &http.Client{

@@ -78,6 +78,22 @@ export type Campaign = {
   currency?: string;
   default_action?: string;
   trafficback_config: TrafficbackConfig;
+  tracking_params?: TrackingParam[] | null;
+};
+
+export type TrackingParam = {
+  key: string;
+  value: string;
+};
+
+export type CampaignStructure = {
+  campaign_id: string;
+  stream_count: number;
+  destination_count: number;
+};
+
+export type ClientConfig = {
+  tracker_base_url: string;
 };
 
 export type TrafficbackConfig = {
@@ -369,6 +385,7 @@ function queryString(filters: Record<string, string | number | undefined>): stri
 }
 
 export const api = {
+  clientConfig: () => request<ClientConfig>("/api/client-config"),
   requestOTP: (email: string) =>
     request<OTPChallenge>(
       "/api/auth/request-otp",
@@ -413,6 +430,8 @@ export const api = {
   ingestionErrors: () => request<IngestionErrorsReport>("/api/reports/ingestion-errors"),
   campaigns: (filters: ListFilters = {}) =>
     request<ListResponse<Campaign>>(`/api/campaigns${queryString(filters)}`),
+  campaignStructure: () => request<{ items: CampaignStructure[] }>("/api/campaigns/structure"),
+  campaign: (id: string) => request<Campaign>(`/api/campaigns/${id}`),
   createCampaign: (data: CampaignRequest) =>
     request<Campaign>(
       "/api/campaigns",
@@ -432,6 +451,16 @@ export const api = {
         ...jsonBody(data)
       }
     ),
+  updateTrackingParams: (
+    id: string,
+    trackingParams: TrackingParam[]
+  ) => request<Campaign>(
+    `/api/campaigns/${id}/tracking-params`,
+    {
+      method: "PUT",
+      ...jsonBody({ tracking_params: trackingParams })
+    }
+  ),
   deleteCampaign: (id: string) =>
     request<void>(
       `/api/campaigns/${id}`,

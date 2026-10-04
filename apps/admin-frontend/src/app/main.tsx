@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import {
   QueryClient,
@@ -20,21 +20,26 @@ import {
   Navigate,
   Route,
   Routes,
-  useNavigate
+  useNavigate,
+  useParams,
+  useSearchParams
 } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { z } from "zod";
 import {
   Campaign,
   CampaignRequest,
+  CampaignStructure,
   Destination,
   DestinationHealthcheckResult,
   DestinationCaps,
   DestinationRequest,
   DestinationSchedule,
   DistributionMode,
+  HealthStatus,
   HealthHistoryRow,
   IngestionErrorRow,
+  ListResponse,
   Metrics,
   PostbackLogRow,
   PostbackTemplate,
@@ -42,6 +47,7 @@ import {
   Status,
   Stream,
   StreamRequest,
+  TrackingParam,
   api,
   ApiRequestError,
   AuthUser,
@@ -60,6 +66,28 @@ function useRoutingSync() {
   return sync;
 }
 const statusOptions: Status[] = ["active", "paused", "archived"];
+
+const statusColors: Record<Status, string> = {
+  active: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+  paused: "bg-amber-50 text-amber-700 ring-amber-200",
+  archived: "bg-zinc-100 text-zinc-600 ring-zinc-200"
+};
+
+function StatusIndicator({ status }: { status: Status }) {
+  const paths: Record<Status, React.ReactNode> = {
+    active: <path d="m8 5 11 7-11 7V5Z" />,
+    paused: <><path d="M8 5v14M16 5v14" /></>,
+    archived: <><path d="M4 7h16v13H4V7ZM3 4h18v3H3V4ZM9 12h6" /></>
+  };
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium ring-1 ${statusColors[status]}`}>
+      <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
+        {paths[status]}
+      </svg>
+      <span className="capitalize">{status}</span>
+    </span>
+  );
+}
 const distributionOptions: DistributionMode[] = [
   "direct",
   "weighted",
@@ -461,6 +489,7 @@ function Layout({ onLogout, actingAs, onActAs }: {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/campaigns" element={<CampaignsPage />} />
+            <Route path="/campaigns/:campaignId/streams" element={<CampaignStreamsPage />} />
             <Route path="/destinations" element={<DestinationsPage />} />
             <Route path="/postbacks" element={<PostbacksPage />} />
             <Route path="/health-history" element={<HealthHistoryPage />} />
@@ -489,7 +518,7 @@ function Dashboard() {
   });
   const campaigns = useQuery({
     queryKey: ["campaigns"],
-    queryFn: () => api.campaigns()
+    queryFn: () => api.campaigns({ limit: 500 })
   });
   const destinations = useQuery({
     queryKey: ["destinations"],
@@ -535,15 +564,21 @@ function UsersPage({ onActAs }: { onActAs: (user: AuthUser) => Promise<void> }) 
         header: "Actions",
         cell: ({ row }) =>
           row.original.approved ? (
-            <button className="link-button" onClick={() => {
-              void onActAs(row.original).then(() => navigate("/"));
-            }} type="button">
-              Open workspace
-            </button>
+            <ActionIconButton
+              ariaLabel={`Open workspace for ${row.original.email}`}
+              icon="workspace"
+              label="Open workspace"
+              onClick={() => {
+                void onActAs(row.original).then(() => navigate("/"));
+              }}
+            />
           ) : (
-            <button className="link-button" onClick={() => approve.mutate(row.original.id)} type="button">
-              Approve
-            </button>
+            <ActionIconButton
+              ariaLabel={`Approve ${row.original.email}`}
+              icon="approve"
+              label="Approve user"
+              onClick={() => approve.mutate(row.original.id)}
+            />
           )
       }
     ],
@@ -558,52 +593,274 @@ function UsersPage({ onActAs }: { onActAs: (user: AuthUser) => Promise<void> }) 
   );
 }
 
+const sourceOptionalMacros = [
+  { label: "Publisher ID", param: "sub2", macro: "[PUBLISHER_ID]" },
+  { label: "Site ID", param: "sub3", macro: "[SITE_ID]" },
+  { label: "Creative ID", param: "sub4", macro: "[CREATIVE_ID]" },
+  { label: "Device", param: "device_type", macro: "[DEVICE]" },
+  { label: "Browser", param: "browser", macro: "[BROWSER]" },
+  { label: "OS", param: "os", macro: "[OS]" },
+  { label: "ISP", param: "isp", macro: "[ISP]" },
+  { label: "Carrier", param: "carrier", macro: "[CARRIER]" },
+  { label: "Connection type", param: "source_connection_type", macro: "[CONNECTION_TYPE]" },
+  { label: "Source campaign ID", param: "source_campaign_id", macro: "[CAMPAIGN_ID]" },
+  { label: "Source campaign name", param: "source_campaign_name", macro: "[CAMPAIGN_NAME]" },
+  { label: "CPV price per 1000 impressions", param: "source_cpv_price", macro: "[CPV_PRICE]" },
+  { label: "Source IP (raw only)", param: "source_ip", macro: "[IP]" }
+] as const;
+
+const defaultTrackingParams: TrackingParam[] = [
+  { key: "source_id", value: "[ZONE_ID]" },
+  { key: "sub1", value: "[ZONE_ID]" },
+  { key: "geo_country", value: "[COUNTRY]" },
+  { key: "clickid", value: "[CLICK_ID]" },
+  { key: "utm_content", value: "[CLICK_ID]" }
+];
+
+function localTrackerURL() {
+  if (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+    return "";
+  }
+  return `http://${window.location.hostname}:8080`;
+}
+
+function encodeTrackingParameter(value: string) {
+  return encodeURIComponent(value.trim())
+    .replace(/%7B/gi, "{")
+    .replace(/%7D/gi, "}")
+    .replace(/%5B/gi, "[")
+    .replace(/%5D/gi, "]");
+}
+
+function campaignTrackingURL(baseURL: string, slug: string) {
+  return `${baseURL.replace(/\/+$/, "")}/c/${encodeURIComponent(slug)}`;
+}
+
+function configuredTrackingParams(campaign: Campaign) {
+  return campaign.tracking_params ?? defaultTrackingParams;
+}
+
+function trackingURL(baseURL: string, campaign: Campaign, params: TrackingParam[]) {
+  if (!baseURL) {
+    return "";
+  }
+  const query = params
+    .filter((param) => param.value.trim() !== "")
+    .map((param) => `${param.key}=${encodeTrackingParameter(param.value)}`)
+    .join("&");
+  const baseLink = campaignTrackingURL(baseURL, campaign.slug);
+  return `${baseLink}${query ? `?${query}` : ""}`;
+}
+
+function CampaignCopyLinkAction({ campaign, baseURL }: { campaign: Campaign; baseURL: string }) {
+  const [copyStatus, setCopyStatus] = useState("");
+  const url = trackingURL(baseURL, campaign, configuredTrackingParams(campaign));
+  return (
+    <>
+      <ActionIconButton
+        ariaLabel={`Copy configured tracking URL for ${campaign.name}`}
+        disabled={!url}
+        icon="copy"
+        label={copyStatus || (url ? "Copy configured tracking URL" : "Tracker URL unavailable")}
+        onClick={() => {
+          void navigator.clipboard.writeText(url).then(
+            () => setCopyStatus("Copied"),
+            () => setCopyStatus("Copy failed")
+          );
+        }}
+      />
+      <span aria-live="polite" className="sr-only">{copyStatus}</span>
+    </>
+  );
+}
+
+function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
+  campaign: Campaign;
+  baseURL: string;
+  onSaved: (campaign: Campaign) => void;
+}) {
+  const initialParams = configuredTrackingParams(campaign);
+  const initialValue = (key: string) => initialParams.find((param) => param.key === key)?.value ?? "";
+  const [zoneID, setZoneID] = useState(initialValue("sub1") || initialValue("source_id"));
+  const [country, setCountry] = useState(initialValue("geo_country"));
+  const [clickID, setClickID] = useState(initialValue("clickid") || initialValue("utm_content"));
+  const [optionalParams, setOptionalParams] = useState<string[]>(
+    sourceOptionalMacros.filter((macro) => initialParams.some((param) => param.key === macro.param)).map((macro) => macro.param)
+  );
+  const [copyStatus, setCopyStatus] = useState("");
+  const [saveStatus, setSaveStatus] = useState("");
+  const params: TrackingParam[] = [
+    { key: "source_id", value: zoneID },
+    { key: "sub1", value: zoneID },
+    { key: "geo_country", value: country },
+    { key: "clickid", value: clickID },
+    { key: "utm_content", value: clickID }
+  ];
+  for (const macro of sourceOptionalMacros) {
+    if (optionalParams.includes(macro.param)) {
+      params.push({ key: macro.param, value: macro.macro });
+    }
+  }
+  const savedParams = params.filter((param) => param.value.trim() !== "");
+  const dirty = JSON.stringify(savedParams) !== JSON.stringify(configuredTrackingParams(campaign));
+  const url = trackingURL(baseURL, campaign, savedParams);
+  const save = useMutation({
+    mutationFn: () => api.updateTrackingParams(campaign.id, savedParams),
+    onSuccess: (updated) => {
+      onSaved(updated);
+      setSaveStatus("Parameters saved. The table copy button now uses this URL.");
+    }
+  });
+  return (
+    <div className="space-y-5">
+      <p className="text-sm text-zinc-600">
+        Copy this URL into your traffic source. The macro placeholders stay readable so the source can substitute their values.
+      </p>
+      {campaign.status !== "active" ? (
+        <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          This campaign is {campaign.status}; its tracking link will start redirecting only after activation and a successful routing refresh.
+        </p>
+      ) : null}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <label className="block text-sm font-medium">
+          Source / zone ID
+          <input className="input mt-1" onChange={(event) => setZoneID(event.target.value)} value={zoneID} />
+          <span className="mt-1 block text-xs font-normal text-zinc-500">source_id and sub1</span>
+        </label>
+        <label className="block text-sm font-medium">
+          Country
+          <input className="input mt-1" onChange={(event) => setCountry(event.target.value)} value={country} />
+          <span className="mt-1 block text-xs font-normal text-zinc-500">geo_country</span>
+        </label>
+        <label className="block text-sm font-medium">
+          Ad network click ID
+          <input className="input mt-1" onChange={(event) => setClickID(event.target.value)} value={clickID} />
+          <span className="mt-1 block text-xs font-normal text-zinc-500">clickid and utm_content</span>
+        </label>
+      </div>
+      <div className="space-y-1 text-xs text-zinc-600">
+        <p>TraffoFlex generates its own click_id for the destination URL; the source [CLICK_ID] is stored as the external click ID.</p>
+        <p>[COUNTRY] is a country name. Rules that expect a two-letter code such as US will not match it.</p>
+        {campaign.traffic_source_id ? (
+          <p>This campaign has a configured traffic source ID, which takes precedence over source_id in click analytics. The zone ID remains available in sub1.</p>
+        ) : null}
+      </div>
+      <details className="rounded-md border border-zinc-200 p-3">
+        <summary className="cursor-pointer text-sm font-medium">Optional source macros</summary>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {sourceOptionalMacros.map((macro) => (
+            <label className="flex items-center gap-2 text-sm" key={macro.param}>
+              <input
+                checked={optionalParams.includes(macro.param)}
+                onChange={(event) => setOptionalParams((current) =>
+                  event.target.checked
+                    ? [...current, macro.param]
+                    : current.filter((item) => item !== macro.param)
+                )}
+                type="checkbox"
+              />
+              {macro.label} <code className="text-xs text-zinc-500">{macro.macro}</code>
+            </label>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-zinc-500">
+          CPV price is kept as a raw parameter; it is per 1000 impressions and is not used as click cost. The source IP parameter is also stored as raw data and is not trusted as the visitor IP.
+        </p>
+      </details>
+      <label className="block text-sm font-medium">
+        Tracking URL
+        <textarea className="input mt-1 min-h-28 font-mono text-xs" onFocus={(event) => event.currentTarget.select()} readOnly value={url} />
+      </label>
+      <div className="flex items-center gap-3">
+        <button
+          className="button-secondary"
+          disabled={!dirty || save.isPending}
+          onClick={() => {
+            setSaveStatus("");
+            save.mutate();
+          }}
+          type="button"
+        >
+          {save.isPending ? "Saving…" : "Save parameters"}
+        </button>
+        <button
+          className="button-primary"
+          disabled={!url}
+          onClick={() => {
+            void navigator.clipboard.writeText(url).then(
+              () => setCopyStatus("Copied to clipboard"),
+              () => setCopyStatus("Copy failed; select the URL above")
+            );
+          }}
+          type="button"
+        >
+          Copy tracking URL
+        </button>
+        <span aria-live="polite" className="text-sm text-zinc-600">{copyStatus}</span>
+      </div>
+      {dirty ? <p className="text-xs text-amber-700">Save parameters to update the copy button in the campaign list.</p> : null}
+      {saveStatus ? <p role="status" className="text-sm text-green-700">{saveStatus}</p> : null}
+      {save.error ? <p role="alert" className="text-sm text-red-700">Could not save parameters: {save.error.message}</p> : null}
+    </div>
+  );
+}
+
+function CampaignStructureCell({
+  structure,
+  kind,
+  loading,
+  failed
+}: {
+  structure?: CampaignStructure;
+  kind: "streams" | "destinations";
+  loading: boolean;
+  failed: boolean;
+}) {
+  if (loading) {
+    return <span className="text-sm text-zinc-500">Loading…</span>;
+  }
+  if (failed) {
+    return <span className="text-sm text-zinc-500">—</span>;
+  }
+  const count = kind === "streams" ? structure?.stream_count : structure?.destination_count;
+  return <span className="font-semibold tabular-nums">{count ?? 0}</span>;
+}
+
 function CampaignsPage() {
   const queryClient = useQueryClient();
   const syncRouting = useRoutingSync();
-  const [selectedID, setSelectedID] = useState<string | null>(null);
+  const navigate = useNavigate();
   const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
+  const [linkCampaign, setLinkCampaign] = useState<Campaign | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<Campaign | null>(null);
+  const [campaignTab, setCampaignTab] = useState<"current" | "archive">("current");
   const [campaignFormOpen, setCampaignFormOpen] = useState(false);
+  const clientConfig = useQuery({
+    queryKey: ["client-config"],
+    queryFn: api.clientConfig
+  });
+  const trackerBaseURL = clientConfig.data?.tracker_base_url || localTrackerURL();
   const campaigns = useQuery({
     queryKey: ["campaigns"],
-    queryFn: () => api.campaigns()
+    queryFn: () => api.campaigns({ limit: 500 })
   });
-  const selectedCampaign = campaigns.data?.items.find((campaign) => campaign.id === selectedID) ?? null;
-  const columns = useMemo<ColumnDef<Campaign>[]>(
-    () => [
-      { header: "Name", accessorKey: "name" },
-      { header: "Slug", accessorKey: "slug" },
-      { header: "Currency", accessorKey: "currency" },
-      { header: "Status", accessorKey: "status" },
-      {
-        header: "Actions",
-        cell: ({ row }) => (
-          <div className="flex gap-2">
-            <button className="link-button" onClick={() => setSelectedID(row.original.id)} type="button">
-              Streams
-            </button>
-            <button
-              className="link-button"
-              onClick={() => {
-                setEditingCampaign(row.original);
-                setCampaignFormOpen(true);
-              }}
-              type="button"
-            >
-              Edit
-            </button>
-          </div>
-        )
-      }
-    ],
-    []
+  const structure = useQuery({
+    queryKey: ["campaign-structure"],
+    queryFn: api.campaignStructure
+  });
+  const structureByCampaign = new Map(
+    (structure.data?.items ?? []).map((item) => [item.campaign_id, item])
   );
-
+  const allCampaigns = campaigns.data?.items ?? [];
+  const currentCampaigns = allCampaigns.filter((campaign) => campaign.status !== "archived");
+  const archivedCampaigns = allCampaigns.filter((campaign) => campaign.status === "archived");
+  const visibleCampaigns = campaignTab === "archive" ? archivedCampaigns : currentCampaigns;
   const createCampaign = useMutation({
     mutationFn: api.createCampaign,
     onSuccess: () => {
       setCampaignFormOpen(false);
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
       void syncRouting(true);
     }
   });
@@ -620,16 +877,138 @@ function CampaignsPage() {
       void syncRouting(true);
     }
   });
-  const deleteCampaign = useMutation({
-    mutationFn: api.deleteCampaign,
+  const archiveCampaign = useMutation({
+    mutationFn: (campaign: Campaign) => api.updateCampaign(
+      campaign.id,
+      campaignRequestWithStatus(campaign, "archived")
+    ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
       void syncRouting(true);
     }
   });
+  const restoreCampaign = useMutation({
+    mutationFn: (campaign: Campaign) => api.updateCampaign(
+      campaign.id,
+      campaignRequestWithStatus(campaign, "paused")
+    ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void syncRouting(true);
+    }
+  });
+  const deleteCampaign = useMutation({
+    mutationFn: api.deleteCampaign,
+    onSuccess: () => {
+      setDeleteCandidate(null);
+      void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
+      void syncRouting(true);
+    }
+  });
+  const columns: ColumnDef<Campaign>[] = [
+    { header: "Name", accessorKey: "name" },
+    {
+      header: "Streams",
+      cell: ({ row }) => (
+        <CampaignStructureCell
+          failed={structure.isError}
+          kind="streams"
+          loading={structure.isPending}
+          structure={structureByCampaign.get(row.original.id)}
+        />
+      )
+    },
+    {
+      header: "Destinations",
+      cell: ({ row }) => (
+        <CampaignStructureCell
+          failed={structure.isError}
+          kind="destinations"
+          loading={structure.isPending}
+          structure={structureByCampaign.get(row.original.id)}
+        />
+      )
+    },
+    { header: "Currency", accessorKey: "currency" },
+    { header: "Status", accessorKey: "status", cell: ({ row }) => <StatusIndicator status={row.original.status} /> },
+    {
+      header: "Actions",
+      cell: ({ row }) => (
+        <div className="flex gap-2">
+          {row.original.status !== "archived" ? (
+            <>
+              <CampaignCopyLinkAction campaign={row.original} baseURL={trackerBaseURL} key={row.original.id} />
+              <ActionIconButton
+                ariaLabel={`Build tracking URL for ${row.original.name}`}
+                icon="link"
+                label="Build tracking URL"
+                onClick={() => setLinkCampaign(row.original)}
+              />
+            </>
+          ) : null}
+          <ActionIconButton
+            ariaLabel={`View streams for ${row.original.name}`}
+            icon="streams"
+            label="View streams"
+            onClick={() => navigate(`/campaigns/${encodeURIComponent(row.original.id)}/streams`)}
+          />
+          <ActionIconButton
+            ariaLabel={`Open report for ${row.original.name}`}
+            icon="report"
+            label="Open campaign report"
+            onClick={() => navigate(`/reports?campaign_id=${encodeURIComponent(row.original.id)}`)}
+          />
+          {row.original.status === "archived" ? (
+            <>
+              <ActionIconButton
+                ariaLabel={`Restore campaign ${row.original.name} as paused`}
+                disabled={restoreCampaign.isPending}
+                icon="restore"
+                label="Restore as paused"
+                onClick={() => restoreCampaign.mutate(row.original)}
+              />
+              <ActionIconButton
+                ariaLabel={`Delete archived campaign ${row.original.name}`}
+                danger
+                icon="delete"
+                label="Delete archived campaign"
+                onClick={() => setDeleteCandidate(row.original)}
+              />
+            </>
+          ) : (
+            <>
+              <ActionIconButton
+                ariaLabel={`Edit campaign ${row.original.name}`}
+                icon="edit"
+                label="Edit campaign"
+                onClick={() => {
+                  setEditingCampaign(row.original);
+                  setCampaignFormOpen(true);
+                }}
+              />
+              <ActionIconButton
+                ariaLabel={`Archive campaign ${row.original.name}`}
+                disabled={archiveCampaign.isPending}
+                icon="archive"
+                label="Archive campaign"
+                onClick={() => archiveCampaign.mutate(row.original)}
+              />
+            </>
+          )}
+        </div>
+      )
+    }
+  ];
 
   return (
     <Page title="Campaigns">
+      {clientConfig.isError ? (
+        <p className="mb-4 text-sm text-red-700">
+          {trackerBaseURL ? "Could not load the configured tracker address; showing the local tracker. " : "Tracker URL is unavailable: "}
+          {clientConfig.error.message}
+        </p>
+      ) : null}
       <Panel title="Campaign list">
         <div className="mb-4 flex justify-end">
           <button
@@ -643,7 +1022,47 @@ function CampaignsPage() {
             Create campaign
           </button>
         </div>
-        <DataTable columns={columns} data={campaigns.data?.items ?? []} />
+        <div className="mb-4 flex gap-2 border-b border-zinc-200" role="tablist" aria-label="Campaign status">
+          <button
+            aria-controls="campaigns-tab-panel"
+            aria-selected={campaignTab === "current"}
+            className={`px-3 py-2 text-sm ${campaignTab === "current" ? "border-b-2 border-zinc-900 font-semibold" : "text-zinc-500"}`}
+            onClick={() => setCampaignTab("current")}
+            id="campaigns-current-tab"
+            role="tab"
+            type="button"
+          >
+            Current ({currentCampaigns.length})
+          </button>
+          <button
+            aria-controls="campaigns-tab-panel"
+            aria-selected={campaignTab === "archive"}
+            className={`px-3 py-2 text-sm ${campaignTab === "archive" ? "border-b-2 border-zinc-900 font-semibold" : "text-zinc-500"}`}
+            onClick={() => setCampaignTab("archive")}
+            id="campaigns-archive-tab"
+            role="tab"
+            type="button"
+          >
+            Archive ({archivedCampaigns.length})
+          </button>
+        </div>
+        {archiveCampaign.error || restoreCampaign.error || structure.error ? (
+          <p role="alert" className="mb-3 text-sm text-red-700">
+            {archiveCampaign.error?.message ?? restoreCampaign.error?.message ?? structure.error?.message}
+          </p>
+        ) : null}
+        <div
+          aria-labelledby={campaignTab === "current" ? "campaigns-current-tab" : "campaigns-archive-tab"}
+          id="campaigns-tab-panel"
+          role="tabpanel"
+        >
+          {campaigns.isPending ? <p className="text-sm text-zinc-500">Loading campaigns…</p> : null}
+          {campaigns.isError ? <p role="alert" className="text-sm text-red-700">{campaigns.error.message}</p> : null}
+          {campaigns.isSuccess && visibleCampaigns.length === 0 ? (
+            <p className="text-sm text-zinc-500">{campaignTab === "archive" ? "No archived campaigns." : "No current campaigns."}</p>
+          ) : null}
+          {visibleCampaigns.length > 0 ? <DataTable columns={columns} data={visibleCampaigns} /> : null}
+        </div>
       </Panel>
       <Modal
         onClose={() => {
@@ -666,18 +1085,102 @@ function CampaignsPage() {
           submitLabel={editingCampaign ? "Save" : "Create"}
         />
       </Modal>
-      <Panel title="Streams" className="mt-4">
-        {selectedCampaign ? (
-          <StreamsManager campaign={selectedCampaign} />
-        ) : (
-          <p className="text-sm text-zinc-500">Select a campaign to manage streams.</p>
-        )}
-      </Panel>
-      <DangerList
-        items={campaigns.data?.items ?? []}
-        label={(campaign) => campaign.name}
-        onDelete={(campaign) => deleteCampaign.mutate(campaign.id)}
-      />
+      <Modal
+        onClose={() => setLinkCampaign(null)}
+        open={linkCampaign !== null}
+        title={linkCampaign ? `Tracking URL: ${linkCampaign.name}` : "Tracking URL"}
+      >
+        {linkCampaign ? (
+          trackerBaseURL ? (
+            <CampaignLinkBuilder
+              baseURL={trackerBaseURL}
+              campaign={linkCampaign}
+              key={linkCampaign.id}
+              onSaved={(updated) => {
+                setLinkCampaign(updated);
+                queryClient.setQueryData<ListResponse<Campaign>>(
+                  ["campaigns"],
+                  (current) => current ? {
+                    ...current,
+                    items: current.items.map((item) => item.id === updated.id ? updated : item)
+                  } : current
+                );
+              }}
+            />
+          ) : (
+            <div className="space-y-3 text-sm">
+              <p>Tracker address is unavailable. Reload its configuration to build the tracking URL.</p>
+              <button className="button-primary" onClick={() => void clientConfig.refetch()} type="button">
+                Reload tracker address
+              </button>
+            </div>
+          )
+        ) : null}
+      </Modal>
+      <Modal
+        onClose={() => setDeleteCandidate(null)}
+        open={deleteCandidate !== null}
+        title="Delete archived campaign"
+      >
+        <div className="space-y-4 text-sm">
+          <p>Delete <strong>{deleteCandidate?.name}</strong> permanently? This cannot be undone.</p>
+          <p className="text-zinc-600">Linked streams and historical analytics remain in storage.</p>
+          {deleteCampaign.error ? <p role="alert" className="text-red-700">{deleteCampaign.error.message}</p> : null}
+          <div className="flex justify-end gap-2">
+            <button className="button-secondary" onClick={() => setDeleteCandidate(null)} type="button">Cancel</button>
+            <button
+              className="rounded-md bg-red-700 px-4 py-2 font-medium text-white hover:bg-red-800 disabled:opacity-50"
+              disabled={deleteCampaign.isPending || deleteCandidate === null}
+              onClick={() => {
+                if (deleteCandidate) {
+                  deleteCampaign.mutate(deleteCandidate.id);
+                }
+              }}
+              type="button"
+            >
+              {deleteCampaign.isPending ? "Deleting…" : "Delete permanently"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    </Page>
+  );
+}
+
+function campaignRequestWithStatus(campaign: Campaign, status: Status): CampaignRequest {
+  return {
+    name: campaign.name,
+    slug: campaign.slug,
+    status,
+    traffic_source_id: campaign.traffic_source_id,
+    currency: campaign.currency,
+    default_action: campaign.default_action,
+    trafficback_config: campaign.trafficback_config
+  };
+}
+
+function CampaignStreamsPage() {
+  const { campaignId } = useParams<{ campaignId: string }>();
+  const campaign = useQuery({
+    queryKey: ["campaign", campaignId],
+    queryFn: () => api.campaign(campaignId ?? ""),
+    enabled: Boolean(campaignId)
+  });
+
+  return (
+    <Page title="Streams">
+      <Link className="button-secondary mb-4 inline-flex" to="/campaigns">
+        ← Back to campaigns
+      </Link>
+      {campaign.isPending ? <p className="text-sm text-zinc-500">Loading campaign…</p> : null}
+      {campaign.isError ? (
+        <p className="text-sm text-red-700">Could not load campaign: {campaign.error.message}</p>
+      ) : null}
+      {campaign.data ? (
+        <Panel title={campaign.data.name}>
+          <StreamsManager campaign={campaign.data} />
+        </Panel>
+      ) : null}
     </Page>
   );
 }
@@ -696,7 +1199,7 @@ function CampaignForm({
     defaultValues: {
       name: initial?.name ?? "",
       slug: initial?.slug ?? "",
-      status: initial?.status ?? "active",
+      status: initial?.status ?? "paused",
       traffic_source_id: initial?.traffic_source_id ?? "",
       currency: initial?.currency ?? "USD",
       default_action: initial?.default_action ?? "",
@@ -778,6 +1281,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
       ),
     onSuccess: () => {
       setStreamFormOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
       queryClient.invalidateQueries({
         queryKey: [
           "streams",
@@ -796,6 +1300,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
     onSuccess: () => {
       setEditingStream(null);
       setStreamFormOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
       queryClient.invalidateQueries({
         queryKey: [
           "streams",
@@ -810,6 +1315,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
     onSuccess: () => {
       setEditingStream(null);
       setStreamFormOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
       queryClient.invalidateQueries({
         queryKey: [
           "streams",
@@ -823,7 +1329,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
     () => [
       { header: "Name", accessorKey: "name" },
       { header: "Priority", accessorKey: "priority" },
-      { header: "Status", accessorKey: "status" },
+      { header: "Status", accessorKey: "status", cell: ({ row }) => <StatusIndicator status={row.original.status} /> },
       {
         header: "Rules",
         cell: ({ row }) => row.original.conditions.length
@@ -836,19 +1342,22 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
         header: "Actions",
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Edit stream ${row.original.name}`}
+              icon="edit"
+              label="Edit stream"
               onClick={() => {
                 setEditingStream(row.original);
                 setStreamFormOpen(true);
               }}
-              type="button"
-            >
-              Edit
-            </button>
-            <button className="link-button" onClick={() => deleteStream.mutate(row.original.id)} type="button">
-              Delete
-            </button>
+            />
+            <ActionIconButton
+              ariaLabel={`Delete stream ${row.original.name}`}
+              danger
+              icon="delete"
+              label="Delete stream"
+              onClick={() => deleteStream.mutate(row.original.id)}
+            />
           </div>
         )
       }
@@ -1071,13 +1580,13 @@ function StreamForm({
               placeholder={condition.operator === "in" || condition.operator === "not_in" ? "a,b,c" : "value"}
               value={condition.values?.join(",") ?? condition.value ?? ""}
             />
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Remove rule ${index + 1}`}
+              danger
+              icon="remove"
+              label="Remove rule"
               onClick={() => setConditions(conditions.filter((_, itemIndex) => itemIndex !== index))}
-              type="button"
-            >
-              Remove
-            </button>
+            />
           </div>
         ))}
       </div>
@@ -1130,13 +1639,13 @@ function StreamForm({
               type="number"
               value={target.weight}
             />
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Remove destination ${index + 1} from stream`}
+              danger
+              icon="remove"
+              label="Remove destination"
               onClick={() => setTargets(targets.filter((_, itemIndex) => itemIndex !== index))}
-              type="button"
-            >
-              Remove
-            </button>
+            />
           </div>
         ))}
       </div>
@@ -1219,6 +1728,22 @@ function StreamForm({
   );
 }
 
+const destinationHealthColors: Record<HealthStatus, string> = {
+  healthy: "bg-emerald-500",
+  degraded: "bg-amber-500",
+  unhealthy: "bg-red-500",
+  unknown: "bg-zinc-400"
+};
+
+function DestinationHealthIndicator({ status }: { status: HealthStatus }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${destinationHealthColors[status]}`} aria-hidden="true" />
+      <span className="capitalize">{status}</span>
+    </span>
+  );
+}
+
 function DestinationsPage() {
   const queryClient = useQueryClient();
   const syncRouting = useRoutingSync();
@@ -1260,34 +1785,47 @@ function DestinationsPage() {
   const triggerHealthcheck = useMutation({
     mutationFn: api.triggerDestinationHealthcheck,
     onMutate: () => setHealthcheckResult(null),
-    onSuccess: (result) => setHealthcheckResult(result)
+    onSuccess: (result) => {
+      setHealthcheckResult(result);
+      void queryClient.invalidateQueries({ queryKey: ["destinations"] });
+    }
   });
   const columns = useMemo<ColumnDef<Destination>[]>(
     () => [
       { header: "Name", accessorKey: "name" },
       { header: "URL", accessorKey: "url" },
-      { header: "Manual", accessorKey: "manual_status" },
-      { header: "Health", accessorKey: "health_status" },
+      { header: "Manual", accessorKey: "manual_status", cell: ({ row }) => <StatusIndicator status={row.original.manual_status} /> },
+      {
+        header: "Health",
+        cell: ({ row }) => <DestinationHealthIndicator status={row.original.health_status} />
+      },
       {
         header: "Actions",
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <button className="link-button" onClick={() => triggerHealthcheck.mutate(row.original.id)} type="button">
-              Check
-            </button>
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Check health of ${row.original.name}`}
+              disabled={triggerHealthcheck.isPending}
+              icon="check"
+              label="Check health"
+              onClick={() => triggerHealthcheck.mutate(row.original.id)}
+            />
+            <ActionIconButton
+              ariaLabel={`Edit destination ${row.original.name}`}
+              icon="edit"
+              label="Edit destination"
               onClick={() => {
                 setEditingDestination(row.original);
                 setDestinationFormOpen(true);
               }}
-              type="button"
-            >
-              Edit
-            </button>
-            <button className="link-button" onClick={() => deleteDestination.mutate(row.original.id)} type="button">
-              Delete
-            </button>
+            />
+            <ActionIconButton
+              ariaLabel={`Delete destination ${row.original.name}`}
+              danger
+              icon="delete"
+              label="Delete destination"
+              onClick={() => deleteDestination.mutate(row.original.id)}
+            />
           </div>
         )
       }
@@ -1427,7 +1965,6 @@ function DestinationForm({
       <TextField label="URL" register={form.register("url")} />
       <TextField label="Healthcheck URL (optional, required for macro URLs or GET checks)" register={form.register("healthcheck_url")} />
       <SelectField label="Manual status" options={statusOptions} register={form.register("manual_status")} />
-      <SelectField label="Health status" options={["healthy", "degraded", "unhealthy", "unknown"]} register={form.register("health_status")} />
       <SelectField label="Redirect" options={["http_302", "meta_refresh", "javascript", "interstitial"]} register={form.register("redirect.mode")} />
       <DestinationScheduleEditor schedule={schedule} setSchedule={setSchedule} />
       <DestinationCapsEditor caps={caps} setCaps={setCaps} />
@@ -1545,16 +2082,16 @@ function DestinationScheduleEditor({
               </label>
             ))}
           </div>
-          <button
-            className="link-button"
+          <ActionIconButton
+            ariaLabel={`Remove schedule window ${index + 1}`}
+            danger
+            icon="remove"
+            label="Remove window"
             onClick={() => setSchedule({
               ...schedule,
               windows: windows.filter((_, itemIndex) => itemIndex !== index)
             })}
-            type="button"
-          >
-            Remove window
-          </button>
+          />
         </div>
       ))}
     </div>
@@ -1649,16 +2186,16 @@ function DestinationCapsEditor({
             type="number"
             value={rule.limit}
           />
-          <button
-            className="link-button"
+          <ActionIconButton
+            ariaLabel={`Remove cap rule ${index + 1}`}
+            danger
+            icon="remove"
+            label="Remove cap rule"
             onClick={() => setCaps({
               ...caps,
               rules: rules.filter((_, itemIndex) => itemIndex !== index)
             })}
-            type="button"
-          >
-            Remove
-          </button>
+          />
         </div>
       ))}
     </div>
@@ -1727,19 +2264,22 @@ function PostbacksPage() {
         header: "Actions",
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Edit postback template ${row.original.name}`}
+              icon="edit"
+              label="Edit template"
               onClick={() => {
                 setEditingTemplate(row.original);
                 setTemplateFormOpen(true);
               }}
-              type="button"
-            >
-              Edit
-            </button>
-            <button className="link-button" onClick={() => deleteTemplate.mutate(row.original.id)} type="button">
-              Delete
-            </button>
+            />
+            <ActionIconButton
+              ariaLabel={`Delete postback template ${row.original.name}`}
+              danger
+              icon="delete"
+              label="Delete template"
+              onClick={() => deleteTemplate.mutate(row.original.id)}
+            />
           </div>
         )
       }
@@ -1949,6 +2489,8 @@ const defaultPostbackMapping = {
 };
 
 function ReportsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const campaignID = searchParams.get("campaign_id") ?? "";
   const defaultPeriod = useMemo(
     defaultReportPeriod,
     []
@@ -1957,12 +2499,16 @@ function ReportsPage() {
   const [chartMode, setChartMode] = useState<"volume" | "money" | "efficiency">("money");
   const [period, setPeriod] = useState(defaultPeriod);
   const reportFilters = useMemo(
-    () => reportDateRange(
-      period.from,
-      period.to
-    ),
+    () => ({
+      ...reportDateRange(
+        period.from,
+        period.to
+      ),
+      campaign_id: campaignID || undefined
+    }),
     [
-      period
+      period,
+      campaignID
     ]
   );
   const campaigns = useQuery({
@@ -2153,6 +2699,33 @@ function ReportsPage() {
         ))}
       </div>
       <Panel title="Period" className="mb-6">
+        <label className="mb-4 block max-w-sm text-sm font-medium">
+          Campaign
+          <select
+            className="input mt-2"
+            onChange={(event) => {
+              const selectedID = event.target.value;
+              setSearchParams((current) => {
+                const next = new URLSearchParams(current);
+                if (selectedID) {
+                  next.set("campaign_id", selectedID);
+                } else {
+                  next.delete("campaign_id");
+                }
+                return next;
+              });
+            }}
+            value={campaignID}
+          >
+            <option value="">All campaigns</option>
+            {campaignID && !campaigns.data?.items.some((campaign) => campaign.id === campaignID) ? (
+              <option value={campaignID}>{campaignID}</option>
+            ) : null}
+            {(campaigns.data?.items ?? []).map((campaign) => (
+              <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
+            ))}
+          </select>
+        </label>
         <div className="grid grid-cols-[repeat(2,minmax(180px,240px))_auto] items-end gap-3">
           <label className="text-sm font-medium">
             From
@@ -2328,6 +2901,78 @@ function MetricGrid({ metrics }: { metrics?: Metrics }) {
   );
 }
 
+type ActionIcon = "workspace" | "approve" | "streams" | "report" | "edit" | "check" | "delete" | "remove" | "archive" | "restore" | "close" | "copy" | "link";
+
+function ActionIconGraphic({ icon }: { icon: ActionIcon }) {
+  const shapes: Record<ActionIcon, React.ReactNode> = {
+    workspace: <><path d="M14 3h7v18h-7" /><path d="m10 8 4 4-4 4M14 12H3" /></>,
+    approve: <path d="m4 12 5 5L20 6" />,
+    streams: <><rect x="4" y="4" width="16" height="4" rx="1" /><rect x="4" y="10" width="16" height="4" rx="1" /><rect x="4" y="16" width="16" height="4" rx="1" /></>,
+    report: <><path d="M4 20V4M4 20h16M8 16v-4M13 16V8M18 16V6" /></>,
+    edit: <><path d="m4 20 4.5-1 11-11a2.1 2.1 0 0 0-3-3l-11 11L4 20Z" /><path d="m14.5 7.5 3 3" /></>,
+    check: <><path d="M3 12h4l3-7 4 14 3-7h4" /></>,
+    delete: <><path d="M4 7h16M10 3h4M6 7l1 14h10l1-14M10 11v6M14 11v6" /></>,
+    remove: <><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></>,
+    archive: <><path d="M4 7h16v13H4V7ZM3 4h18v3H3V4ZM12 10v7m-3-3 3 3 3-3" /></>,
+    restore: <><path d="M4 7h16v13H4V7ZM3 4h18v3H3V4ZM12 17v-7m-3 3 3-3 3 3" /></>,
+    close: <path d="M5 5l14 14M19 5 5 19" />,
+    copy: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
+    link: <><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1" /><path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1" /></>
+  };
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
+      {shapes[icon]}
+    </svg>
+  );
+}
+
+function ActionIconButton({
+  icon,
+  label,
+  ariaLabel = label,
+  onClick,
+  danger = false,
+  disabled = false,
+  tooltipBelow = false
+}: {
+  icon: ActionIcon;
+  label: string;
+  ariaLabel?: string;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+  tooltipBelow?: boolean;
+}) {
+  const tooltipId = useId();
+  return (
+    <span className="group relative inline-flex">
+      <button
+        aria-describedby={tooltipId}
+        aria-label={ariaLabel}
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+          danger
+            ? "border-red-200 text-red-700 hover:bg-red-50 focus-visible:ring-red-600"
+            : "border-zinc-200 text-zinc-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 focus-visible:ring-blue-600"
+        }`}
+        disabled={disabled}
+        onClick={onClick}
+        type="button"
+      >
+        <ActionIconGraphic icon={icon} />
+      </button>
+      <span
+        className={`pointer-events-none invisible absolute left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded bg-zinc-900 px-2 py-1 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100 ${
+          tooltipBelow ? "top-full mt-2" : "bottom-full mb-2"
+        }`}
+        id={tooltipId}
+        role="tooltip"
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
 function DataTable<T>({ columns, data }: { columns: ColumnDef<T>[]; data: T[] }) {
   const table = useReactTable({
     columns,
@@ -2365,31 +3010,6 @@ function DataTable<T>({ columns, data }: { columns: ColumnDef<T>[]; data: T[] })
         ))}
       </tbody>
     </table>
-  );
-}
-
-function DangerList<T>({
-  items,
-  label,
-  onDelete
-}: {
-  items: T[];
-  label: (item: T) => string;
-  onDelete: (item: T) => void;
-}) {
-  if (items.length === 0) {
-    return null;
-  }
-  return (
-    <Panel title="Danger zone" className="mt-4">
-      <div className="flex flex-wrap gap-2">
-        {items.map((item) => (
-          <button className="button-secondary" key={label(item)} onClick={() => onDelete(item)} type="button">
-            Delete {label(item)}
-          </button>
-        ))}
-      </div>
-    </Panel>
   );
 }
 
@@ -2467,9 +3087,12 @@ function Modal({
       >
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
           <h2 className="text-base font-semibold text-zinc-950">{title}</h2>
-          <button className="link-button" onClick={onClose} type="button">
-            Close
-          </button>
+          <ActionIconButton
+            icon="close"
+            label="Close"
+            onClick={onClose}
+            tooltipBelow
+          />
         </div>
         <div className="max-h-[calc(100vh-10rem)] overflow-y-auto px-5 py-4">
           {children}
@@ -2762,7 +3385,10 @@ const campaignSchema = z.object({
     (config) => !config.enabled || (Number.isInteger(config.max_depth) && config.max_depth >= 1 && config.max_depth <= 10),
     "Maximum trafficback depth must be between 1 and 10"
   )
-});
+}).refine(
+  (campaign) => campaign.status !== "active" || campaign.trafficback_config.enabled,
+  "Active campaign requires a trafficback URL"
+);
 
 const streamSchema = z.object({
   name: z.string().min(1),

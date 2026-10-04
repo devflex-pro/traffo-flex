@@ -5,6 +5,26 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 
 ## [Unreleased]
 
+## [v0.1.2] - 2026-10-04
+
+### Added
+
+- A campaign tracking URL builder with copyable links, configurable query
+  parameters and traffic source macros. Saved parameters are reused by the
+  campaign list copy action; existing campaigns retain the default template.
+- A dedicated streams page for each campaign, stream and unique destination
+  counts in the campaign list, and direct links to campaign reports.
+- Campaign archive and restore actions, with permanent deletion available only
+  from the archive after confirmation.
+- Status icons and labeled action buttons throughout the admin UI, plus a
+  colored destination health indicator that updates after a manual probe.
+
+### Fixed
+
+- Allow manual destination probes before a campaign is active and require a
+  trafficback destination when activating a campaign.
+- Use the correct healthcheck address for the local admin frontend container.
+
 ## [v0.1.1] - 2026-10-04
 
 ### Fixed

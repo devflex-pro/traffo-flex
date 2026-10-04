@@ -34,7 +34,7 @@ func TestServiceCRUD(t *testing.T) {
 	created, err := service.Create(ctx, CampaignRequest{
 		Name:   "Campaign One",
 		Slug:   "campaign-one",
-		Status: models.StatusActive,
+		Status: models.StatusPaused,
 	})
 	if err != nil {
 		t.Fatalf(
@@ -80,6 +80,24 @@ func TestServiceCRUD(t *testing.T) {
 			updated.Status,
 		)
 	}
+	if err := service.Delete(
+		ctx,
+		created.ID,
+	); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("delete before archive error = %v, want ErrInvalidInput", err)
+	}
+	_, err = service.Update(
+		ctx,
+		created.ID,
+		CampaignRequest{
+			Name:   updated.Name,
+			Slug:   updated.Slug,
+			Status: models.StatusArchived,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := service.Delete(
 		ctx,
@@ -101,6 +119,59 @@ func TestServiceCRUD(t *testing.T) {
 			"Get after delete error = %v, want ErrNotFound",
 			err,
 		)
+	}
+}
+
+func TestTrackingParamsUpdatePreservesCampaignAndRejectsDuplicates(t *testing.T) {
+	service := NewService(NewMemoryRepository())
+	ctx := context.Background()
+	created, err := service.Create(
+		ctx,
+		CampaignRequest{
+			Name:   "Tracking campaign",
+			Slug:   "tracking-campaign",
+			Status: models.StatusPaused,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := []models.TrackingParam{
+		{Key: "sub1", Value: " [ZONE_ID] "},
+		{Key: "utm_content", Value: "[CLICK_ID]"},
+	}
+	updated, err := service.UpdateTrackingParams(
+		ctx,
+		created.ID,
+		params,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != created.Name || updated.Slug != created.Slug ||
+		len(updated.TrackingParams) != 2 || updated.TrackingParams[0].Value != "[ZONE_ID]" {
+		t.Fatalf("unexpected campaign after tracking update: %#v", updated)
+	}
+	_, err = service.UpdateTrackingParams(
+		ctx,
+		created.ID,
+		[]models.TrackingParam{
+			{Key: "sub1", Value: "a"},
+			{Key: "sub1", Value: "b"},
+		},
+	)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("duplicate params error = %v, want ErrInvalidInput", err)
+	}
+	got, err := service.Get(
+		ctx,
+		created.ID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.TrackingParams) != 2 {
+		t.Fatalf("invalid update changed saved params: %#v", got.TrackingParams)
 	}
 }
 
@@ -158,6 +229,7 @@ func TestServiceSavesAndUpdatesTrafficback(t *testing.T) {
 		CampaignRequest{
 			Name:        "Trafficback campaign",
 			Slug:        "trafficback-campaign",
+			Status:      models.StatusPaused,
 			Trafficback: &models.TrafficbackConfig{},
 		},
 	)
@@ -172,6 +244,45 @@ func TestServiceSavesAndUpdatesTrafficback(t *testing.T) {
 			"trafficback remained enabled: %#v",
 			updated.TrafficbackConfig,
 		)
+	}
+}
+
+func TestActiveCampaignRequiresTrafficback(t *testing.T) {
+	service := NewService(NewMemoryRepository())
+	ctx := context.Background()
+	_, err := service.Create(
+		ctx,
+		CampaignRequest{
+			Name:   "No fallback",
+			Slug:   "no-fallback",
+			Status: models.StatusActive,
+		},
+	)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("create active campaign without trafficback: %v", err)
+	}
+	created, err := service.Create(
+		ctx,
+		CampaignRequest{
+			Name:   "Paused campaign",
+			Slug:   "paused-campaign",
+			Status: models.StatusPaused,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Update(
+		ctx,
+		created.ID,
+		CampaignRequest{
+			Name:   created.Name,
+			Slug:   created.Slug,
+			Status: models.StatusActive,
+		},
+	)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("activate campaign without trafficback: %v", err)
 	}
 }
 

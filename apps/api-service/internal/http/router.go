@@ -41,6 +41,7 @@ func NewRouterWithReadyChecker(
 type Options struct {
 	ReadyChecker               httpx.ReadyChecker
 	AdminFrontendOrigin        string
+	TrackerPublicURL           string
 	IntegrationClient          integrations.Client
 	ReportRepository           reports.Repository
 	CampaignRepository         campaigns.Repository
@@ -63,6 +64,7 @@ func NewRouterWithConfig(
 		Options{
 			ReadyChecker:        cfg,
 			AdminFrontendOrigin: cfg.AdminFrontendOrigin,
+			TrackerPublicURL:    cfg.TrackerPublicURL,
 			IntegrationClient: integrations.NewHTTPClient(
 				cfg.TrafficServiceURL,
 				cfg.PostbackServiceURL,
@@ -121,6 +123,7 @@ func NewRouterWithOptions(
 			campaigns.NewService(opts.CampaignRepository),
 		)
 	}
+	campaignHandler.SetStructureReader(opts.StreamRepository)
 	destinationHandler := destinations.NewHandler(log)
 	if opts.DestinationRepository != nil {
 		destinationHandler = destinations.NewHandlerWithService(
@@ -195,6 +198,15 @@ func NewRouterWithOptions(
 	r.Route(
 		"/api",
 		func(r chi.Router) {
+			r.Get("/client-config", func(w http.ResponseWriter, _ *http.Request) {
+				if err := httpx.JSON(
+					w,
+					http.StatusOK,
+					map[string]string{"tracker_base_url": opts.TrackerPublicURL},
+				); err != nil {
+					log.Error("failed to write client config", "error", err)
+				}
+			})
 			if opts.AuthService != nil {
 				r.Post(
 					"/auth/request-otp",
@@ -276,6 +288,10 @@ func registerProtectedRoutes(
 		"/campaigns",
 		campaignHandler.List,
 	)
+	r.Get(
+		"/campaigns/structure",
+		campaignHandler.Structure,
+	)
 	r.Post(
 		"/campaigns",
 		campaignHandler.Create,
@@ -287,6 +303,10 @@ func registerProtectedRoutes(
 	r.Put(
 		"/campaigns/{id}",
 		campaignHandler.Update,
+	)
+	r.Put(
+		"/campaigns/{id}/tracking-params",
+		campaignHandler.UpdateTrackingParams,
 	)
 	r.Delete(
 		"/campaigns/{id}",

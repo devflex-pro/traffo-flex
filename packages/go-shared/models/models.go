@@ -171,6 +171,11 @@ type TrafficbackConfig struct {
 	FallbackURL      string `json:"fallback_url,omitempty"`
 }
 
+type TrackingParam struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 type Campaign struct {
 	ID                string            `json:"id"`
 	OwnerID           string            `json:"owner_id,omitempty"`
@@ -186,6 +191,7 @@ type Campaign struct {
 	Currency          string            `json:"currency,omitempty"`
 	DefaultAction     string            `json:"default_action,omitempty"`
 	TrafficbackConfig TrafficbackConfig `json:"trafficback_config"`
+	TrackingParams    []TrackingParam   `json:"tracking_params"`
 	CreatedAt         time.Time         `json:"created_at"`
 	UpdatedAt         time.Time         `json:"updated_at"`
 }
