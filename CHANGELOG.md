@@ -5,6 +5,8 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 
 ## [Unreleased]
 
+## [v0.1.1] - 2026-10-04
+
 ### Fixed
 
 - Show masked feedback when entering the Resend API key during installation.
