@@ -138,6 +138,15 @@ func TestCampaignCRUDRouteFlow(t *testing.T) {
 		"/api/campaigns/"+created.ID,
 		stdhttp.StatusOK,
 	)
+	trackingBody := []byte(`{"tracking_params":[{"key":"sub1","value":"[ZONE_ID]"},{"key":"utm_content","value":"[CLICK_ID]"}]}`)
+	assertStatusWithBody(
+		t,
+		router,
+		stdhttp.MethodPut,
+		"/api/campaigns/"+created.ID+"/tracking-params",
+		trackingBody,
+		stdhttp.StatusOK,
+	)
 
 	updateBody := []byte(`{"name":"Campaign Updated","slug":"campaign-updated","status":"paused"}`)
 	assertStatusWithBody(
@@ -148,6 +157,27 @@ func TestCampaignCRUDRouteFlow(t *testing.T) {
 		updateBody,
 		stdhttp.StatusOK,
 	)
+	getRR := httptest.NewRecorder()
+	router.ServeHTTP(
+		getRR,
+		httptest.NewRequest(
+			stdhttp.MethodGet,
+			"/api/campaigns/"+created.ID,
+			nil,
+		),
+	)
+	var got struct {
+		TrackingParams []struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"tracking_params"`
+	}
+	if err := json.NewDecoder(getRR.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.TrackingParams) != 2 || got.TrackingParams[1].Value != "[CLICK_ID]" {
+		t.Fatalf("tracking params lost after campaign update: %#v", got.TrackingParams)
+	}
 	assertStatus(
 		t,
 		router,

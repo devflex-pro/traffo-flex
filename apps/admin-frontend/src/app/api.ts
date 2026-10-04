@@ -78,6 +78,12 @@ export type Campaign = {
   currency?: string;
   default_action?: string;
   trafficback_config: TrafficbackConfig;
+  tracking_params?: TrackingParam[] | null;
+};
+
+export type TrackingParam = {
+  key: string;
+  value: string;
 };
 
 export type ClientConfig = {
@@ -438,6 +444,16 @@ export const api = {
         ...jsonBody(data)
       }
     ),
+  updateTrackingParams: (
+    id: string,
+    trackingParams: TrackingParam[]
+  ) => request<Campaign>(
+    `/api/campaigns/${id}/tracking-params`,
+    {
+      method: "PUT",
+      ...jsonBody({ tracking_params: trackingParams })
+    }
+  ),
   deleteCampaign: (id: string) =>
     request<void>(
       `/api/campaigns/${id}`,

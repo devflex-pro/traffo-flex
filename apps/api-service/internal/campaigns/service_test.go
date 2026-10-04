@@ -104,6 +104,59 @@ func TestServiceCRUD(t *testing.T) {
 	}
 }
 
+func TestTrackingParamsUpdatePreservesCampaignAndRejectsDuplicates(t *testing.T) {
+	service := NewService(NewMemoryRepository())
+	ctx := context.Background()
+	created, err := service.Create(
+		ctx,
+		CampaignRequest{
+			Name:   "Tracking campaign",
+			Slug:   "tracking-campaign",
+			Status: models.StatusPaused,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := []models.TrackingParam{
+		{Key: "sub1", Value: " [ZONE_ID] "},
+		{Key: "utm_content", Value: "[CLICK_ID]"},
+	}
+	updated, err := service.UpdateTrackingParams(
+		ctx,
+		created.ID,
+		params,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != created.Name || updated.Slug != created.Slug ||
+		len(updated.TrackingParams) != 2 || updated.TrackingParams[0].Value != "[ZONE_ID]" {
+		t.Fatalf("unexpected campaign after tracking update: %#v", updated)
+	}
+	_, err = service.UpdateTrackingParams(
+		ctx,
+		created.ID,
+		[]models.TrackingParam{
+			{Key: "sub1", Value: "a"},
+			{Key: "sub1", Value: "b"},
+		},
+	)
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("duplicate params error = %v, want ErrInvalidInput", err)
+	}
+	got, err := service.Get(
+		ctx,
+		created.ID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.TrackingParams) != 2 {
+		t.Fatalf("invalid update changed saved params: %#v", got.TrackingParams)
+	}
+}
+
 func TestServiceSavesAndUpdatesTrafficback(t *testing.T) {
 	service := NewService(NewMemoryRepository())
 	ctx := context.Background()

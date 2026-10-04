@@ -37,6 +37,7 @@ import {
   HealthStatus,
   HealthHistoryRow,
   IngestionErrorRow,
+  ListResponse,
   Metrics,
   PostbackLogRow,
   PostbackTemplate,
@@ -44,6 +45,7 @@ import {
   Status,
   Stream,
   StreamRequest,
+  TrackingParam,
   api,
   ApiRequestError,
   AuthUser,
@@ -567,7 +569,7 @@ function UsersPage({ onActAs }: { onActAs: (user: AuthUser) => Promise<void> }) 
   );
 }
 
-const rishadsOptionalMacros = [
+const sourceOptionalMacros = [
   { label: "Publisher ID", param: "sub2", macro: "[PUBLISHER_ID]" },
   { label: "Site ID", param: "sub3", macro: "[SITE_ID]" },
   { label: "Creative ID", param: "sub4", macro: "[CREATIVE_ID]" },
@@ -582,6 +584,14 @@ const rishadsOptionalMacros = [
   { label: "CPV price per 1000 impressions", param: "source_cpv_price", macro: "[CPV_PRICE]" },
   { label: "Source IP (raw only)", param: "source_ip", macro: "[IP]" }
 ] as const;
+
+const defaultTrackingParams: TrackingParam[] = [
+  { key: "source_id", value: "[ZONE_ID]" },
+  { key: "sub1", value: "[ZONE_ID]" },
+  { key: "geo_country", value: "[COUNTRY]" },
+  { key: "clickid", value: "[CLICK_ID]" },
+  { key: "utm_content", value: "[CLICK_ID]" }
+];
 
 function localTrackerURL() {
   if (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
@@ -602,25 +612,32 @@ function campaignTrackingURL(baseURL: string, slug: string) {
   return `${baseURL.replace(/\/+$/, "")}/c/${encodeURIComponent(slug)}`;
 }
 
-function CampaignTrackingCell({ campaign, baseURL }: { campaign: Campaign; baseURL: string }) {
-  const [copyStatus, setCopyStatus] = useState("");
+function configuredTrackingParams(campaign: Campaign) {
+  return campaign.tracking_params ?? defaultTrackingParams;
+}
+
+function trackingURL(baseURL: string, campaign: Campaign, params: TrackingParam[]) {
   if (!baseURL) {
-    return <span className="text-zinc-500">Tracker URL unavailable</span>;
+    return "";
   }
-  const url = campaignTrackingURL(baseURL, campaign.slug);
+  const query = params
+    .filter((param) => param.value.trim() !== "")
+    .map((param) => `${param.key}=${encodeTrackingParameter(param.value)}`)
+    .join("&");
+  const baseLink = campaignTrackingURL(baseURL, campaign.slug);
+  return `${baseLink}${query ? `?${query}` : ""}`;
+}
+
+function CampaignCopyLinkAction({ campaign, baseURL }: { campaign: Campaign; baseURL: string }) {
+  const [copyStatus, setCopyStatus] = useState("");
+  const url = trackingURL(baseURL, campaign, configuredTrackingParams(campaign));
   return (
-    <div className="flex min-w-[19rem] items-center gap-2">
-      <input
-        aria-label={`Tracking URL for ${campaign.name}`}
-        className="input min-w-0 flex-1 font-mono text-xs"
-        onFocus={(event) => event.currentTarget.select()}
-        readOnly
-        value={url}
-      />
+    <>
       <ActionIconButton
-        ariaLabel={`Copy tracking URL for ${campaign.name}`}
+        ariaLabel={`Copy configured tracking URL for ${campaign.name}`}
+        disabled={!url}
         icon="copy"
-        label={copyStatus || "Copy tracking URL"}
+        label={copyStatus || (url ? "Copy configured tracking URL" : "Tracker URL unavailable")}
         onClick={() => {
           void navigator.clipboard.writeText(url).then(
             () => setCopyStatus("Copied"),
@@ -629,34 +646,47 @@ function CampaignTrackingCell({ campaign, baseURL }: { campaign: Campaign; baseU
         }}
       />
       <span aria-live="polite" className="sr-only">{copyStatus}</span>
-    </div>
+    </>
   );
 }
 
-function CampaignLinkBuilder({ campaign, baseURL }: { campaign: Campaign; baseURL: string }) {
-  const [zoneID, setZoneID] = useState("[ZONE_ID]");
-  const [country, setCountry] = useState("[COUNTRY]");
-  const [clickID, setClickID] = useState("[CLICK_ID]");
-  const [optionalParams, setOptionalParams] = useState<string[]>([]);
+function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
+  campaign: Campaign;
+  baseURL: string;
+  onSaved: (campaign: Campaign) => void;
+}) {
+  const initialParams = configuredTrackingParams(campaign);
+  const initialValue = (key: string) => initialParams.find((param) => param.key === key)?.value ?? "";
+  const [zoneID, setZoneID] = useState(initialValue("sub1") || initialValue("source_id"));
+  const [country, setCountry] = useState(initialValue("geo_country"));
+  const [clickID, setClickID] = useState(initialValue("clickid") || initialValue("utm_content"));
+  const [optionalParams, setOptionalParams] = useState<string[]>(
+    sourceOptionalMacros.filter((macro) => initialParams.some((param) => param.key === macro.param)).map((macro) => macro.param)
+  );
   const [copyStatus, setCopyStatus] = useState("");
-  const baseLink = baseURL ? campaignTrackingURL(baseURL, campaign.slug) : "";
-  const params: Array<[string, string]> = [
-    ["source_id", zoneID],
-    ["sub1", zoneID],
-    ["geo_country", country],
-    ["clickid", clickID],
-    ["utm_content", clickID]
+  const [saveStatus, setSaveStatus] = useState("");
+  const params: TrackingParam[] = [
+    { key: "source_id", value: zoneID },
+    { key: "sub1", value: zoneID },
+    { key: "geo_country", value: country },
+    { key: "clickid", value: clickID },
+    { key: "utm_content", value: clickID }
   ];
-  for (const macro of rishadsOptionalMacros) {
+  for (const macro of sourceOptionalMacros) {
     if (optionalParams.includes(macro.param)) {
-      params.push([macro.param, macro.macro]);
+      params.push({ key: macro.param, value: macro.macro });
     }
   }
-  const query = params
-    .filter(([, value]) => value.trim() !== "")
-    .map(([key, value]) => `${key}=${encodeTrackingParameter(value)}`)
-    .join("&");
-  const url = baseLink ? `${baseLink}${query ? `?${query}` : ""}` : "";
+  const savedParams = params.filter((param) => param.value.trim() !== "");
+  const dirty = JSON.stringify(savedParams) !== JSON.stringify(configuredTrackingParams(campaign));
+  const url = trackingURL(baseURL, campaign, savedParams);
+  const save = useMutation({
+    mutationFn: () => api.updateTrackingParams(campaign.id, savedParams),
+    onSuccess: (updated) => {
+      onSaved(updated);
+      setSaveStatus("Parameters saved. The table copy button now uses this URL.");
+    }
+  });
   return (
     <div className="space-y-5">
       <p className="text-sm text-zinc-600">
@@ -694,7 +724,7 @@ function CampaignLinkBuilder({ campaign, baseURL }: { campaign: Campaign; baseUR
       <details className="rounded-md border border-zinc-200 p-3">
         <summary className="cursor-pointer text-sm font-medium">Optional source macros</summary>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {rishadsOptionalMacros.map((macro) => (
+          {sourceOptionalMacros.map((macro) => (
             <label className="flex items-center gap-2 text-sm" key={macro.param}>
               <input
                 checked={optionalParams.includes(macro.param)}
@@ -719,6 +749,17 @@ function CampaignLinkBuilder({ campaign, baseURL }: { campaign: Campaign; baseUR
       </label>
       <div className="flex items-center gap-3">
         <button
+          className="button-secondary"
+          disabled={!dirty || save.isPending}
+          onClick={() => {
+            setSaveStatus("");
+            save.mutate();
+          }}
+          type="button"
+        >
+          {save.isPending ? "Saving…" : "Save parameters"}
+        </button>
+        <button
           className="button-primary"
           disabled={!url}
           onClick={() => {
@@ -733,6 +774,9 @@ function CampaignLinkBuilder({ campaign, baseURL }: { campaign: Campaign; baseUR
         </button>
         <span aria-live="polite" className="text-sm text-zinc-600">{copyStatus}</span>
       </div>
+      {dirty ? <p className="text-xs text-amber-700">Save parameters to update the copy button in the campaign list.</p> : null}
+      {saveStatus ? <p role="status" className="text-sm text-green-700">{saveStatus}</p> : null}
+      {save.error ? <p role="alert" className="text-sm text-red-700">Could not save parameters: {save.error.message}</p> : null}
     </div>
   );
 }
@@ -757,18 +801,13 @@ function CampaignsPage() {
     () => [
       { header: "Name", accessorKey: "name" },
       { header: "Slug", accessorKey: "slug" },
-      {
-        header: "Tracking URL",
-        cell: ({ row }) => (
-          <CampaignTrackingCell campaign={row.original} baseURL={trackerBaseURL} />
-        )
-      },
       { header: "Currency", accessorKey: "currency" },
       { header: "Status", accessorKey: "status" },
       {
         header: "Actions",
         cell: ({ row }) => (
           <div className="flex gap-2">
+            <CampaignCopyLinkAction campaign={row.original} baseURL={trackerBaseURL} />
             <ActionIconButton
               ariaLabel={`Build tracking URL for ${row.original.name}`}
               icon="link"
@@ -881,6 +920,16 @@ function CampaignsPage() {
               baseURL={trackerBaseURL}
               campaign={linkCampaign}
               key={linkCampaign.id}
+              onSaved={(updated) => {
+                setLinkCampaign(updated);
+                queryClient.setQueryData<ListResponse<Campaign>>(
+                  ["campaigns"],
+                  (current) => current ? {
+                    ...current,
+                    items: current.items.map((item) => item.id === updated.id ? updated : item)
+                  } : current
+                );
+              }}
             />
           ) : (
             <div className="space-y-3 text-sm">

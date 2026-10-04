@@ -299,6 +299,10 @@ func registerProtectedRoutes(
 		"/campaigns/{id}",
 		campaignHandler.Update,
 	)
+	r.Put(
+		"/campaigns/{id}/tracking-params",
+		campaignHandler.UpdateTrackingParams,
+	)
 	r.Delete(
 		"/campaigns/{id}",
 		campaignHandler.Delete,

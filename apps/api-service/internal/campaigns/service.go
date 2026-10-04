@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,8 +13,9 @@ import (
 )
 
 var (
-	ErrInvalidInput = errors.New("invalid campaign input")
-	ErrNotFound     = errors.New("campaign not found")
+	ErrInvalidInput         = errors.New("invalid campaign input")
+	ErrNotFound             = errors.New("campaign not found")
+	trackingParamKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
 type CampaignRequest struct {
@@ -48,6 +50,14 @@ type Repository interface {
 	Update(
 		ctx context.Context,
 		campaign models.Campaign,
+	) (
+		models.Campaign,
+		error,
+	)
+	UpdateTrackingParams(
+		ctx context.Context,
+		id string,
+		params []models.TrackingParam,
 	) (
 		models.Campaign,
 		error,
@@ -217,6 +227,75 @@ func (s *Service) Delete(
 		ctx,
 		id,
 	)
+}
+
+func (s *Service) UpdateTrackingParams(
+	ctx context.Context,
+	id string,
+	params []models.TrackingParam,
+) (
+	models.Campaign,
+	error,
+) {
+	if strings.TrimSpace(id) == "" {
+		return models.Campaign{}, errors.Join(
+			ErrInvalidInput,
+			errors.New("campaign id is required"),
+		)
+	}
+	if err := validateTrackingParams(params); err != nil {
+		return models.Campaign{}, err
+	}
+	normalized := make(
+		[]models.TrackingParam,
+		0,
+		len(params),
+	)
+	for _, param := range params {
+		normalized = append(
+			normalized,
+			models.TrackingParam{
+				Key:   strings.TrimSpace(param.Key),
+				Value: strings.TrimSpace(param.Value),
+			},
+		)
+	}
+	return s.repo.UpdateTrackingParams(
+		ctx,
+		id,
+		normalized,
+	)
+}
+
+func validateTrackingParams(params []models.TrackingParam) error {
+	if len(params) > 24 {
+		return errors.Join(
+			ErrInvalidInput,
+			errors.New("too many tracking parameters"),
+		)
+	}
+	seen := make(
+		map[string]struct{},
+		len(params),
+	)
+	for _, param := range params {
+		key := strings.TrimSpace(param.Key)
+		value := strings.TrimSpace(param.Value)
+		if !trackingParamKeyPattern.MatchString(key) || value == "" || len(value) > 256 {
+			return errors.Join(
+				ErrInvalidInput,
+				errors.New("invalid tracking parameter"),
+			)
+		}
+		if _, exists := seen[key]; exists {
+			return errors.Join(
+				ErrInvalidInput,
+				errors.New("duplicate tracking parameter"),
+			)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
 }
 
 func validateRequest(req CampaignRequest) error {

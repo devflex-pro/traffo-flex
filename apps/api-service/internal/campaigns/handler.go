@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/devflex/traffoflex/packages/go-shared/httpx"
+	"github.com/devflex/traffoflex/packages/go-shared/models"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -163,6 +164,53 @@ func (h *Handler) Update(
 			"id",
 		),
 		req,
+	)
+	if err != nil {
+		h.respondServiceError(
+			w,
+			err,
+		)
+		return
+	}
+	h.respondJSON(
+		w,
+		http.StatusOK,
+		campaign,
+	)
+}
+
+func (h *Handler) UpdateTrackingParams(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	var req struct {
+		Params *[]models.TrackingParam `json:"tracking_params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondError(
+			w,
+			http.StatusBadRequest,
+			"invalid JSON body",
+			err,
+		)
+		return
+	}
+	if req.Params == nil {
+		h.respondError(
+			w,
+			http.StatusBadRequest,
+			"tracking_params is required",
+			ErrInvalidInput,
+		)
+		return
+	}
+	campaign, err := h.service.UpdateTrackingParams(
+		r.Context(),
+		chi.URLParam(
+			r,
+			"id",
+		),
+		*req.Params,
 	)
 	if err != nil {
 		h.respondServiceError(

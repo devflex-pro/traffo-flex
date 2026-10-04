@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/devflex/traffoflex/packages/go-shared/models"
 )
@@ -115,6 +116,29 @@ func (r *MemoryRepository) Update(
 		return models.Campaign{}, ErrNotFound
 	}
 	r.campaigns[campaign.ID] = campaign
+	return campaign, nil
+}
+
+func (r *MemoryRepository) UpdateTrackingParams(
+	ctx context.Context,
+	id string,
+	params []models.TrackingParam,
+) (
+	models.Campaign,
+	error,
+) {
+	if err := ctx.Err(); err != nil {
+		return models.Campaign{}, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	campaign, exists := r.campaigns[id]
+	if !exists {
+		return models.Campaign{}, ErrNotFound
+	}
+	campaign.TrackingParams = params
+	campaign.UpdatedAt = time.Now().UTC()
+	r.campaigns[id] = campaign
 	return campaign, nil
 }
 
