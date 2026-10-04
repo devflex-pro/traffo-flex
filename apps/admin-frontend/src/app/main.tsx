@@ -33,6 +33,7 @@ import {
   DestinationRequest,
   DestinationSchedule,
   DistributionMode,
+  HealthStatus,
   HealthHistoryRow,
   IngestionErrorRow,
   Metrics,
@@ -1219,6 +1220,22 @@ function StreamForm({
   );
 }
 
+const destinationHealthColors: Record<HealthStatus, string> = {
+  healthy: "bg-emerald-500",
+  degraded: "bg-amber-500",
+  unhealthy: "bg-red-500",
+  unknown: "bg-zinc-400"
+};
+
+function DestinationHealthIndicator({ status }: { status: HealthStatus }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${destinationHealthColors[status]}`} aria-hidden="true" />
+      <span className="capitalize">{status}</span>
+    </span>
+  );
+}
+
 function DestinationsPage() {
   const queryClient = useQueryClient();
   const syncRouting = useRoutingSync();
@@ -1260,14 +1277,20 @@ function DestinationsPage() {
   const triggerHealthcheck = useMutation({
     mutationFn: api.triggerDestinationHealthcheck,
     onMutate: () => setHealthcheckResult(null),
-    onSuccess: (result) => setHealthcheckResult(result)
+    onSuccess: (result) => {
+      setHealthcheckResult(result);
+      void queryClient.invalidateQueries({ queryKey: ["destinations"] });
+    }
   });
   const columns = useMemo<ColumnDef<Destination>[]>(
     () => [
       { header: "Name", accessorKey: "name" },
       { header: "URL", accessorKey: "url" },
       { header: "Manual", accessorKey: "manual_status" },
-      { header: "Health", accessorKey: "health_status" },
+      {
+        header: "Health",
+        cell: ({ row }) => <DestinationHealthIndicator status={row.original.health_status} />
+      },
       {
         header: "Actions",
         cell: ({ row }) => (
@@ -1427,7 +1450,6 @@ function DestinationForm({
       <TextField label="URL" register={form.register("url")} />
       <TextField label="Healthcheck URL (optional, required for macro URLs or GET checks)" register={form.register("healthcheck_url")} />
       <SelectField label="Manual status" options={statusOptions} register={form.register("manual_status")} />
-      <SelectField label="Health status" options={["healthy", "degraded", "unhealthy", "unknown"]} register={form.register("health_status")} />
       <SelectField label="Redirect" options={["http_302", "meta_refresh", "javascript", "interstitial"]} register={form.register("redirect.mode")} />
       <DestinationScheduleEditor schedule={schedule} setSchedule={setSchedule} />
       <DestinationCapsEditor caps={caps} setCaps={setCaps} />
