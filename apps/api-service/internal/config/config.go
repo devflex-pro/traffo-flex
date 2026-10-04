@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ type Config struct {
 	MongoDatabase          string
 	ClickHouseHTTPURL      string
 	TrafficServiceURL      string
+	TrackerPublicURL       string
 	PostbackServiceURL     string
 	AdminFrontendOrigin    string
 	AuthAdminEmail         string
@@ -53,6 +55,10 @@ func Load() Config {
 		TrafficServiceURL: sharedconfig.Env(
 			"TRAFFIC_SERVICE_URL",
 			"http://traffic-service:8080",
+		),
+		TrackerPublicURL: sharedconfig.Env(
+			"TRACKER_PUBLIC_URL",
+			"http://localhost:8080",
 		),
 		PostbackServiceURL: sharedconfig.Env(
 			"POSTBACK_SERVICE_URL",
@@ -153,6 +159,7 @@ func (c Config) Validate() error {
 			"http",
 			"https",
 		),
+		validateTrackerPublicURL(c),
 		sharedconfig.RequireURL(
 			"POSTBACK_SERVICE_URL",
 			c.PostbackServiceURL,
@@ -189,6 +196,21 @@ func (c Config) Validate() error {
 		),
 		validateAuthDelivery(c),
 	)
+}
+
+func validateTrackerPublicURL(c Config) error {
+	parsed, err := url.Parse(c.TrackerPublicURL)
+	if err != nil || parsed == nil ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Hostname() == "" || parsed.User != nil ||
+		(parsed.Path != "" && parsed.Path != "/") ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("TRACKER_PUBLIC_URL must be an HTTP or HTTPS origin")
+	}
+	if !c.LocalAuthEnv() && parsed.Scheme != "https" {
+		return errors.New("TRACKER_PUBLIC_URL must use HTTPS in production")
+	}
+	return nil
 }
 
 func envIntFallbackMinutesAsSeconds(

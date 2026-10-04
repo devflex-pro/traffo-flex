@@ -80,6 +80,10 @@ export type Campaign = {
   trafficback_config: TrafficbackConfig;
 };
 
+export type ClientConfig = {
+  tracker_base_url: string;
+};
+
 export type TrafficbackConfig = {
   enabled: boolean;
   url: string;
@@ -369,6 +373,7 @@ function queryString(filters: Record<string, string | number | undefined>): stri
 }
 
 export const api = {
+  clientConfig: () => request<ClientConfig>("/api/client-config"),
   requestOTP: (email: string) =>
     request<OTPChallenge>(
       "/api/auth/request-otp",

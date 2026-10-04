@@ -565,12 +565,188 @@ function UsersPage({ onActAs }: { onActAs: (user: AuthUser) => Promise<void> }) 
   );
 }
 
+const rishadsOptionalMacros = [
+  { label: "Publisher ID", param: "sub2", macro: "[PUBLISHER_ID]" },
+  { label: "Site ID", param: "sub3", macro: "[SITE_ID]" },
+  { label: "Creative ID", param: "sub4", macro: "[CREATIVE_ID]" },
+  { label: "Device", param: "device_type", macro: "[DEVICE]" },
+  { label: "Browser", param: "browser", macro: "[BROWSER]" },
+  { label: "OS", param: "os", macro: "[OS]" },
+  { label: "ISP", param: "isp", macro: "[ISP]" },
+  { label: "Carrier", param: "carrier", macro: "[CARRIER]" },
+  { label: "Connection type", param: "source_connection_type", macro: "[CONNECTION_TYPE]" },
+  { label: "Source campaign ID", param: "source_campaign_id", macro: "[CAMPAIGN_ID]" },
+  { label: "Source campaign name", param: "source_campaign_name", macro: "[CAMPAIGN_NAME]" },
+  { label: "CPV price per 1000 impressions", param: "source_cpv_price", macro: "[CPV_PRICE]" },
+  { label: "Source IP (raw only)", param: "source_ip", macro: "[IP]" }
+] as const;
+
+function localTrackerURL() {
+  if (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+    return "";
+  }
+  return `http://${window.location.hostname}:8080`;
+}
+
+function encodeTrackingParameter(value: string) {
+  return encodeURIComponent(value.trim())
+    .replace(/%7B/gi, "{")
+    .replace(/%7D/gi, "}")
+    .replace(/%5B/gi, "[")
+    .replace(/%5D/gi, "]");
+}
+
+function campaignTrackingURL(baseURL: string, slug: string) {
+  return `${baseURL.replace(/\/+$/, "")}/c/${encodeURIComponent(slug)}`;
+}
+
+function CampaignTrackingCell({ campaign, baseURL }: { campaign: Campaign; baseURL: string }) {
+  const [copyStatus, setCopyStatus] = useState("");
+  if (!baseURL) {
+    return <span className="text-zinc-500">Tracker URL unavailable</span>;
+  }
+  const url = campaignTrackingURL(baseURL, campaign.slug);
+  return (
+    <div className="flex min-w-[19rem] items-center gap-2">
+      <input
+        aria-label={`Tracking URL for ${campaign.name}`}
+        className="input min-w-0 flex-1 font-mono text-xs"
+        onFocus={(event) => event.currentTarget.select()}
+        readOnly
+        value={url}
+      />
+      <ActionIconButton
+        ariaLabel={`Copy tracking URL for ${campaign.name}`}
+        icon="copy"
+        label={copyStatus || "Copy tracking URL"}
+        onClick={() => {
+          void navigator.clipboard.writeText(url).then(
+            () => setCopyStatus("Copied"),
+            () => setCopyStatus("Copy failed")
+          );
+        }}
+      />
+      <span aria-live="polite" className="sr-only">{copyStatus}</span>
+    </div>
+  );
+}
+
+function CampaignLinkBuilder({ campaign, baseURL }: { campaign: Campaign; baseURL: string }) {
+  const [zoneID, setZoneID] = useState("[ZONE_ID]");
+  const [country, setCountry] = useState("[COUNTRY]");
+  const [clickID, setClickID] = useState("[CLICK_ID]");
+  const [optionalParams, setOptionalParams] = useState<string[]>([]);
+  const [copyStatus, setCopyStatus] = useState("");
+  const baseLink = baseURL ? campaignTrackingURL(baseURL, campaign.slug) : "";
+  const params: Array<[string, string]> = [
+    ["source_id", zoneID],
+    ["sub1", zoneID],
+    ["geo_country", country],
+    ["clickid", clickID],
+    ["utm_content", clickID]
+  ];
+  for (const macro of rishadsOptionalMacros) {
+    if (optionalParams.includes(macro.param)) {
+      params.push([macro.param, macro.macro]);
+    }
+  }
+  const query = params
+    .filter(([, value]) => value.trim() !== "")
+    .map(([key, value]) => `${key}=${encodeTrackingParameter(value)}`)
+    .join("&");
+  const url = baseLink ? `${baseLink}${query ? `?${query}` : ""}` : "";
+  return (
+    <div className="space-y-5">
+      <p className="text-sm text-zinc-600">
+        Copy this URL into your traffic source. The macro placeholders stay readable so the source can substitute their values.
+      </p>
+      {campaign.status !== "active" ? (
+        <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          This campaign is {campaign.status}; its tracking link will start redirecting only after activation and a successful routing refresh.
+        </p>
+      ) : null}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <label className="block text-sm font-medium">
+          Source / zone ID
+          <input className="input mt-1" onChange={(event) => setZoneID(event.target.value)} value={zoneID} />
+          <span className="mt-1 block text-xs font-normal text-zinc-500">source_id and sub1</span>
+        </label>
+        <label className="block text-sm font-medium">
+          Country
+          <input className="input mt-1" onChange={(event) => setCountry(event.target.value)} value={country} />
+          <span className="mt-1 block text-xs font-normal text-zinc-500">geo_country</span>
+        </label>
+        <label className="block text-sm font-medium">
+          Ad network click ID
+          <input className="input mt-1" onChange={(event) => setClickID(event.target.value)} value={clickID} />
+          <span className="mt-1 block text-xs font-normal text-zinc-500">clickid and utm_content</span>
+        </label>
+      </div>
+      <div className="space-y-1 text-xs text-zinc-600">
+        <p>TraffoFlex generates its own click_id for the destination URL; the source [CLICK_ID] is stored as the external click ID.</p>
+        <p>[COUNTRY] is a country name. Rules that expect a two-letter code such as US will not match it.</p>
+        {campaign.traffic_source_id ? (
+          <p>This campaign has a configured traffic source ID, which takes precedence over source_id in click analytics. The zone ID remains available in sub1.</p>
+        ) : null}
+      </div>
+      <details className="rounded-md border border-zinc-200 p-3">
+        <summary className="cursor-pointer text-sm font-medium">Optional source macros</summary>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {rishadsOptionalMacros.map((macro) => (
+            <label className="flex items-center gap-2 text-sm" key={macro.param}>
+              <input
+                checked={optionalParams.includes(macro.param)}
+                onChange={(event) => setOptionalParams((current) =>
+                  event.target.checked
+                    ? [...current, macro.param]
+                    : current.filter((item) => item !== macro.param)
+                )}
+                type="checkbox"
+              />
+              {macro.label} <code className="text-xs text-zinc-500">{macro.macro}</code>
+            </label>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-zinc-500">
+          CPV price is kept as a raw parameter; it is per 1000 impressions and is not used as click cost. The source IP parameter is also stored as raw data and is not trusted as the visitor IP.
+        </p>
+      </details>
+      <label className="block text-sm font-medium">
+        Tracking URL
+        <textarea className="input mt-1 min-h-28 font-mono text-xs" onFocus={(event) => event.currentTarget.select()} readOnly value={url} />
+      </label>
+      <div className="flex items-center gap-3">
+        <button
+          className="button-primary"
+          disabled={!url}
+          onClick={() => {
+            void navigator.clipboard.writeText(url).then(
+              () => setCopyStatus("Copied to clipboard"),
+              () => setCopyStatus("Copy failed; select the URL above")
+            );
+          }}
+          type="button"
+        >
+          Copy tracking URL
+        </button>
+        <span aria-live="polite" className="text-sm text-zinc-600">{copyStatus}</span>
+      </div>
+    </div>
+  );
+}
+
 function CampaignsPage() {
   const queryClient = useQueryClient();
   const syncRouting = useRoutingSync();
   const [selectedID, setSelectedID] = useState<string | null>(null);
   const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
+  const [linkCampaign, setLinkCampaign] = useState<Campaign | null>(null);
   const [campaignFormOpen, setCampaignFormOpen] = useState(false);
+  const clientConfig = useQuery({
+    queryKey: ["client-config"],
+    queryFn: api.clientConfig
+  });
+  const trackerBaseURL = clientConfig.data?.tracker_base_url || localTrackerURL();
   const campaigns = useQuery({
     queryKey: ["campaigns"],
     queryFn: () => api.campaigns()
@@ -580,12 +756,24 @@ function CampaignsPage() {
     () => [
       { header: "Name", accessorKey: "name" },
       { header: "Slug", accessorKey: "slug" },
+      {
+        header: "Tracking URL",
+        cell: ({ row }) => (
+          <CampaignTrackingCell campaign={row.original} baseURL={trackerBaseURL} />
+        )
+      },
       { header: "Currency", accessorKey: "currency" },
       { header: "Status", accessorKey: "status" },
       {
         header: "Actions",
         cell: ({ row }) => (
           <div className="flex gap-2">
+            <ActionIconButton
+              ariaLabel={`Build tracking URL for ${row.original.name}`}
+              icon="link"
+              label="Build tracking URL"
+              onClick={() => setLinkCampaign(row.original)}
+            />
             <ActionIconButton
               ariaLabel={`View streams for ${row.original.name}`}
               icon="streams"
@@ -605,7 +793,7 @@ function CampaignsPage() {
         )
       }
     ],
-    []
+    [trackerBaseURL]
   );
 
   const createCampaign = useMutation({
@@ -639,6 +827,12 @@ function CampaignsPage() {
 
   return (
     <Page title="Campaigns">
+      {clientConfig.isError ? (
+        <p className="mb-4 text-sm text-red-700">
+          {trackerBaseURL ? "Could not load the configured tracker address; showing the local tracker. " : "Tracker URL is unavailable: "}
+          {clientConfig.error.message}
+        </p>
+      ) : null}
       <Panel title="Campaign list">
         <div className="mb-4 flex justify-end">
           <button
@@ -674,6 +868,28 @@ function CampaignsPage() {
           }}
           submitLabel={editingCampaign ? "Save" : "Create"}
         />
+      </Modal>
+      <Modal
+        onClose={() => setLinkCampaign(null)}
+        open={linkCampaign !== null}
+        title={linkCampaign ? `Tracking URL: ${linkCampaign.name}` : "Tracking URL"}
+      >
+        {linkCampaign ? (
+          trackerBaseURL ? (
+            <CampaignLinkBuilder
+              baseURL={trackerBaseURL}
+              campaign={linkCampaign}
+              key={linkCampaign.id}
+            />
+          ) : (
+            <div className="space-y-3 text-sm">
+              <p>Tracker address is unavailable. Reload its configuration to build the tracking URL.</p>
+              <button className="button-primary" onClick={() => void clientConfig.refetch()} type="button">
+                Reload tracker address
+              </button>
+            </div>
+          )
+        ) : null}
       </Modal>
       <Panel title="Streams" className="mt-4">
         {selectedCampaign ? (
@@ -2371,7 +2587,7 @@ function MetricGrid({ metrics }: { metrics?: Metrics }) {
   );
 }
 
-type ActionIcon = "workspace" | "approve" | "streams" | "edit" | "check" | "delete" | "remove" | "close";
+type ActionIcon = "workspace" | "approve" | "streams" | "edit" | "check" | "delete" | "remove" | "close" | "copy" | "link";
 
 function ActionIconGraphic({ icon }: { icon: ActionIcon }) {
   const shapes: Record<ActionIcon, React.ReactNode> = {
@@ -2382,7 +2598,9 @@ function ActionIconGraphic({ icon }: { icon: ActionIcon }) {
     check: <><path d="M3 12h4l3-7 4 14 3-7h4" /></>,
     delete: <><path d="M4 7h16M10 3h4M6 7l1 14h10l1-14M10 11v6M14 11v6" /></>,
     remove: <><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></>,
-    close: <path d="M5 5l14 14M19 5 5 19" />
+    close: <path d="M5 5l14 14M19 5 5 19" />,
+    copy: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
+    link: <><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1" /><path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1" /></>
   };
   return (
     <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">

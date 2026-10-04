@@ -73,6 +73,7 @@ func main() {
 		apphttp.Options{
 			ReadyChecker:        cfg,
 			AdminFrontendOrigin: cfg.AdminFrontendOrigin,
+			TrackerPublicURL:    cfg.TrackerPublicURL,
 			IntegrationClient: integrations.NewHTTPClient(
 				cfg.TrafficServiceURL,
 				cfg.PostbackServiceURL,

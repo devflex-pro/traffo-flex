@@ -35,6 +35,34 @@ func TestHealthAndReady(t *testing.T) {
 	)
 }
 
+func TestClientConfigReturnsTrackerBaseURL(t *testing.T) {
+	router := NewRouterWithOptions(
+		testLogger(),
+		Options{TrackerPublicURL: "https://go.example.com"},
+	)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(
+		response,
+		httptest.NewRequest(
+			stdhttp.MethodGet,
+			"/api/client-config",
+			nil,
+		),
+	)
+	if response.Code != stdhttp.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	var payload struct {
+		TrackerBaseURL string `json:"tracker_base_url"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.TrackerBaseURL != "https://go.example.com" {
+		t.Fatalf("tracker URL = %q", payload.TrackerBaseURL)
+	}
+}
+
 func TestReadyUnavailable(t *testing.T) {
 	router := NewRouterWithReadyChecker(testLogger(), httpx.ReadyFunc(func(r *stdhttp.Request) error {
 		return errors.New("dependency unavailable")
