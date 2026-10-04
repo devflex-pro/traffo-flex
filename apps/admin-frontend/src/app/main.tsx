@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import {
   QueryClient,
@@ -536,15 +536,21 @@ function UsersPage({ onActAs }: { onActAs: (user: AuthUser) => Promise<void> }) 
         header: "Actions",
         cell: ({ row }) =>
           row.original.approved ? (
-            <button className="link-button" onClick={() => {
-              void onActAs(row.original).then(() => navigate("/"));
-            }} type="button">
-              Open workspace
-            </button>
+            <ActionIconButton
+              ariaLabel={`Open workspace for ${row.original.email}`}
+              icon="workspace"
+              label="Open workspace"
+              onClick={() => {
+                void onActAs(row.original).then(() => navigate("/"));
+              }}
+            />
           ) : (
-            <button className="link-button" onClick={() => approve.mutate(row.original.id)} type="button">
-              Approve
-            </button>
+            <ActionIconButton
+              ariaLabel={`Approve ${row.original.email}`}
+              icon="approve"
+              label="Approve user"
+              onClick={() => approve.mutate(row.original.id)}
+            />
           )
       }
     ],
@@ -580,19 +586,21 @@ function CampaignsPage() {
         header: "Actions",
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <button className="link-button" onClick={() => setSelectedID(row.original.id)} type="button">
-              Streams
-            </button>
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`View streams for ${row.original.name}`}
+              icon="streams"
+              label="View streams"
+              onClick={() => setSelectedID(row.original.id)}
+            />
+            <ActionIconButton
+              ariaLabel={`Edit campaign ${row.original.name}`}
+              icon="edit"
+              label="Edit campaign"
               onClick={() => {
                 setEditingCampaign(row.original);
                 setCampaignFormOpen(true);
               }}
-              type="button"
-            >
-              Edit
-            </button>
+            />
           </div>
         )
       }
@@ -837,19 +845,22 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
         header: "Actions",
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Edit stream ${row.original.name}`}
+              icon="edit"
+              label="Edit stream"
               onClick={() => {
                 setEditingStream(row.original);
                 setStreamFormOpen(true);
               }}
-              type="button"
-            >
-              Edit
-            </button>
-            <button className="link-button" onClick={() => deleteStream.mutate(row.original.id)} type="button">
-              Delete
-            </button>
+            />
+            <ActionIconButton
+              ariaLabel={`Delete stream ${row.original.name}`}
+              danger
+              icon="delete"
+              label="Delete stream"
+              onClick={() => deleteStream.mutate(row.original.id)}
+            />
           </div>
         )
       }
@@ -1072,13 +1083,13 @@ function StreamForm({
               placeholder={condition.operator === "in" || condition.operator === "not_in" ? "a,b,c" : "value"}
               value={condition.values?.join(",") ?? condition.value ?? ""}
             />
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Remove rule ${index + 1}`}
+              danger
+              icon="remove"
+              label="Remove rule"
               onClick={() => setConditions(conditions.filter((_, itemIndex) => itemIndex !== index))}
-              type="button"
-            >
-              Remove
-            </button>
+            />
           </div>
         ))}
       </div>
@@ -1131,13 +1142,13 @@ function StreamForm({
               type="number"
               value={target.weight}
             />
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Remove destination ${index + 1} from stream`}
+              danger
+              icon="remove"
+              label="Remove destination"
               onClick={() => setTargets(targets.filter((_, itemIndex) => itemIndex !== index))}
-              type="button"
-            >
-              Remove
-            </button>
+            />
           </div>
         ))}
       </div>
@@ -1295,22 +1306,29 @@ function DestinationsPage() {
         header: "Actions",
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <button className="link-button" onClick={() => triggerHealthcheck.mutate(row.original.id)} type="button">
-              Check
-            </button>
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Check health of ${row.original.name}`}
+              disabled={triggerHealthcheck.isPending}
+              icon="check"
+              label="Check health"
+              onClick={() => triggerHealthcheck.mutate(row.original.id)}
+            />
+            <ActionIconButton
+              ariaLabel={`Edit destination ${row.original.name}`}
+              icon="edit"
+              label="Edit destination"
               onClick={() => {
                 setEditingDestination(row.original);
                 setDestinationFormOpen(true);
               }}
-              type="button"
-            >
-              Edit
-            </button>
-            <button className="link-button" onClick={() => deleteDestination.mutate(row.original.id)} type="button">
-              Delete
-            </button>
+            />
+            <ActionIconButton
+              ariaLabel={`Delete destination ${row.original.name}`}
+              danger
+              icon="delete"
+              label="Delete destination"
+              onClick={() => deleteDestination.mutate(row.original.id)}
+            />
           </div>
         )
       }
@@ -1567,16 +1585,16 @@ function DestinationScheduleEditor({
               </label>
             ))}
           </div>
-          <button
-            className="link-button"
+          <ActionIconButton
+            ariaLabel={`Remove schedule window ${index + 1}`}
+            danger
+            icon="remove"
+            label="Remove window"
             onClick={() => setSchedule({
               ...schedule,
               windows: windows.filter((_, itemIndex) => itemIndex !== index)
             })}
-            type="button"
-          >
-            Remove window
-          </button>
+          />
         </div>
       ))}
     </div>
@@ -1671,16 +1689,16 @@ function DestinationCapsEditor({
             type="number"
             value={rule.limit}
           />
-          <button
-            className="link-button"
+          <ActionIconButton
+            ariaLabel={`Remove cap rule ${index + 1}`}
+            danger
+            icon="remove"
+            label="Remove cap rule"
             onClick={() => setCaps({
               ...caps,
               rules: rules.filter((_, itemIndex) => itemIndex !== index)
             })}
-            type="button"
-          >
-            Remove
-          </button>
+          />
         </div>
       ))}
     </div>
@@ -1749,19 +1767,22 @@ function PostbacksPage() {
         header: "Actions",
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <button
-              className="link-button"
+            <ActionIconButton
+              ariaLabel={`Edit postback template ${row.original.name}`}
+              icon="edit"
+              label="Edit template"
               onClick={() => {
                 setEditingTemplate(row.original);
                 setTemplateFormOpen(true);
               }}
-              type="button"
-            >
-              Edit
-            </button>
-            <button className="link-button" onClick={() => deleteTemplate.mutate(row.original.id)} type="button">
-              Delete
-            </button>
+            />
+            <ActionIconButton
+              ariaLabel={`Delete postback template ${row.original.name}`}
+              danger
+              icon="delete"
+              label="Delete template"
+              onClick={() => deleteTemplate.mutate(row.original.id)}
+            />
           </div>
         )
       }
@@ -2350,6 +2371,73 @@ function MetricGrid({ metrics }: { metrics?: Metrics }) {
   );
 }
 
+type ActionIcon = "workspace" | "approve" | "streams" | "edit" | "check" | "delete" | "remove" | "close";
+
+function ActionIconGraphic({ icon }: { icon: ActionIcon }) {
+  const shapes: Record<ActionIcon, React.ReactNode> = {
+    workspace: <><path d="M14 3h7v18h-7" /><path d="m10 8 4 4-4 4M14 12H3" /></>,
+    approve: <path d="m4 12 5 5L20 6" />,
+    streams: <><rect x="4" y="4" width="16" height="4" rx="1" /><rect x="4" y="10" width="16" height="4" rx="1" /><rect x="4" y="16" width="16" height="4" rx="1" /></>,
+    edit: <><path d="m4 20 4.5-1 11-11a2.1 2.1 0 0 0-3-3l-11 11L4 20Z" /><path d="m14.5 7.5 3 3" /></>,
+    check: <><path d="M3 12h4l3-7 4 14 3-7h4" /></>,
+    delete: <><path d="M4 7h16M10 3h4M6 7l1 14h10l1-14M10 11v6M14 11v6" /></>,
+    remove: <><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></>,
+    close: <path d="M5 5l14 14M19 5 5 19" />
+  };
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
+      {shapes[icon]}
+    </svg>
+  );
+}
+
+function ActionIconButton({
+  icon,
+  label,
+  ariaLabel = label,
+  onClick,
+  danger = false,
+  disabled = false,
+  tooltipBelow = false
+}: {
+  icon: ActionIcon;
+  label: string;
+  ariaLabel?: string;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+  tooltipBelow?: boolean;
+}) {
+  const tooltipId = useId();
+  return (
+    <span className="group relative inline-flex">
+      <button
+        aria-describedby={tooltipId}
+        aria-label={ariaLabel}
+        className={`inline-flex h-9 w-9 items-center justify-center rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+          danger
+            ? "border-red-200 text-red-700 hover:bg-red-50 focus-visible:ring-red-600"
+            : "border-zinc-200 text-zinc-700 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 focus-visible:ring-blue-600"
+        }`}
+        disabled={disabled}
+        onClick={onClick}
+        type="button"
+      >
+        <ActionIconGraphic icon={icon} />
+      </button>
+      <span
+        className={`pointer-events-none invisible absolute left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded bg-zinc-900 px-2 py-1 text-xs font-medium text-white opacity-0 shadow-lg transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100 ${
+          tooltipBelow ? "top-full mt-2" : "bottom-full mb-2"
+        }`}
+        id={tooltipId}
+        role="tooltip"
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
 function DataTable<T>({ columns, data }: { columns: ColumnDef<T>[]; data: T[] }) {
   const table = useReactTable({
     columns,
@@ -2489,9 +2577,12 @@ function Modal({
       >
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
           <h2 className="text-base font-semibold text-zinc-950">{title}</h2>
-          <button className="link-button" onClick={onClose} type="button">
-            Close
-          </button>
+          <ActionIconButton
+            icon="close"
+            label="Close"
+            onClick={onClose}
+            tooltipBelow
+          />
         </div>
         <div className="max-h-[calc(100vh-10rem)] overflow-y-auto px-5 py-4">
           {children}
