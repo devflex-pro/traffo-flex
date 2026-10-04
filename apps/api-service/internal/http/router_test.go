@@ -94,6 +94,13 @@ func TestCampaignsRoute(t *testing.T) {
 		"/api/campaigns",
 		stdhttp.StatusOK,
 	)
+	assertStatus(
+		t,
+		router,
+		stdhttp.MethodGet,
+		"/api/campaigns/structure",
+		stdhttp.StatusOK,
+	)
 }
 
 func TestCampaignCRUDRouteFlow(t *testing.T) {
@@ -178,6 +185,45 @@ func TestCampaignCRUDRouteFlow(t *testing.T) {
 	if len(got.TrackingParams) != 2 || got.TrackingParams[1].Value != "[CLICK_ID]" {
 		t.Fatalf("tracking params lost after campaign update: %#v", got.TrackingParams)
 	}
+	assertStatus(
+		t,
+		router,
+		stdhttp.MethodDelete,
+		"/api/campaigns/"+created.ID,
+		stdhttp.StatusBadRequest,
+	)
+	archiveBody := []byte(`{"name":"Campaign Updated","slug":"campaign-updated","status":"archived"}`)
+	assertStatusWithBody(
+		t,
+		router,
+		stdhttp.MethodPut,
+		"/api/campaigns/"+created.ID,
+		archiveBody,
+		stdhttp.StatusOK,
+	)
+	assertStatusWithBody(
+		t,
+		router,
+		stdhttp.MethodPut,
+		"/api/campaigns/"+created.ID,
+		updateBody,
+		stdhttp.StatusOK,
+	)
+	assertStatus(
+		t,
+		router,
+		stdhttp.MethodDelete,
+		"/api/campaigns/"+created.ID,
+		stdhttp.StatusBadRequest,
+	)
+	assertStatusWithBody(
+		t,
+		router,
+		stdhttp.MethodPut,
+		"/api/campaigns/"+created.ID,
+		archiveBody,
+		stdhttp.StatusOK,
+	)
 	assertStatus(
 		t,
 		router,

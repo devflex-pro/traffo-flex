@@ -86,6 +86,12 @@ export type TrackingParam = {
   value: string;
 };
 
+export type CampaignStructure = {
+  campaign_id: string;
+  stream_count: number;
+  destination_count: number;
+};
+
 export type ClientConfig = {
   tracker_base_url: string;
 };
@@ -424,6 +430,7 @@ export const api = {
   ingestionErrors: () => request<IngestionErrorsReport>("/api/reports/ingestion-errors"),
   campaigns: (filters: ListFilters = {}) =>
     request<ListResponse<Campaign>>(`/api/campaigns${queryString(filters)}`),
+  campaignStructure: () => request<{ items: CampaignStructure[] }>("/api/campaigns/structure"),
   campaign: (id: string) => request<Campaign>(`/api/campaigns/${id}`),
   createCampaign: (data: CampaignRequest) =>
     request<Campaign>(

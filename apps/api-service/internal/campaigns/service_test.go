@@ -80,6 +80,24 @@ func TestServiceCRUD(t *testing.T) {
 			updated.Status,
 		)
 	}
+	if err := service.Delete(
+		ctx,
+		created.ID,
+	); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("delete before archive error = %v, want ErrInvalidInput", err)
+	}
+	_, err = service.Update(
+		ctx,
+		created.ID,
+		CampaignRequest{
+			Name:   updated.Name,
+			Slug:   updated.Slug,
+			Status: models.StatusArchived,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := service.Delete(
 		ctx,

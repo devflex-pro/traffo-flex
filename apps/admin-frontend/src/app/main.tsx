@@ -21,13 +21,15 @@ import {
   Route,
   Routes,
   useNavigate,
-  useParams
+  useParams,
+  useSearchParams
 } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { z } from "zod";
 import {
   Campaign,
   CampaignRequest,
+  CampaignStructure,
   Destination,
   DestinationHealthcheckResult,
   DestinationCaps,
@@ -64,6 +66,28 @@ function useRoutingSync() {
   return sync;
 }
 const statusOptions: Status[] = ["active", "paused", "archived"];
+
+const statusColors: Record<Status, string> = {
+  active: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+  paused: "bg-amber-50 text-amber-700 ring-amber-200",
+  archived: "bg-zinc-100 text-zinc-600 ring-zinc-200"
+};
+
+function StatusIndicator({ status }: { status: Status }) {
+  const paths: Record<Status, React.ReactNode> = {
+    active: <path d="m8 5 11 7-11 7V5Z" />,
+    paused: <><path d="M8 5v14M16 5v14" /></>,
+    archived: <><path d="M4 7h16v13H4V7ZM3 4h18v3H3V4ZM9 12h6" /></>
+  };
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium ring-1 ${statusColors[status]}`}>
+      <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
+        {paths[status]}
+      </svg>
+      <span className="capitalize">{status}</span>
+    </span>
+  );
+}
 const distributionOptions: DistributionMode[] = [
   "direct",
   "weighted",
@@ -494,7 +518,7 @@ function Dashboard() {
   });
   const campaigns = useQuery({
     queryKey: ["campaigns"],
-    queryFn: () => api.campaigns()
+    queryFn: () => api.campaigns({ limit: 500 })
   });
   const destinations = useQuery({
     queryKey: ["destinations"],
@@ -781,12 +805,35 @@ function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
   );
 }
 
+function CampaignStructureCell({
+  structure,
+  kind,
+  loading,
+  failed
+}: {
+  structure?: CampaignStructure;
+  kind: "streams" | "destinations";
+  loading: boolean;
+  failed: boolean;
+}) {
+  if (loading) {
+    return <span className="text-sm text-zinc-500">Loading…</span>;
+  }
+  if (failed) {
+    return <span className="text-sm text-zinc-500">—</span>;
+  }
+  const count = kind === "streams" ? structure?.stream_count : structure?.destination_count;
+  return <span className="font-semibold tabular-nums">{count ?? 0}</span>;
+}
+
 function CampaignsPage() {
   const queryClient = useQueryClient();
   const syncRouting = useRoutingSync();
   const navigate = useNavigate();
   const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
   const [linkCampaign, setLinkCampaign] = useState<Campaign | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<Campaign | null>(null);
+  const [campaignTab, setCampaignTab] = useState<"current" | "archive">("current");
   const [campaignFormOpen, setCampaignFormOpen] = useState(false);
   const clientConfig = useQuery({
     queryKey: ["client-config"],
@@ -795,52 +842,25 @@ function CampaignsPage() {
   const trackerBaseURL = clientConfig.data?.tracker_base_url || localTrackerURL();
   const campaigns = useQuery({
     queryKey: ["campaigns"],
-    queryFn: () => api.campaigns()
+    queryFn: () => api.campaigns({ limit: 500 })
   });
-  const columns = useMemo<ColumnDef<Campaign>[]>(
-    () => [
-      { header: "Name", accessorKey: "name" },
-      { header: "Slug", accessorKey: "slug" },
-      { header: "Currency", accessorKey: "currency" },
-      { header: "Status", accessorKey: "status" },
-      {
-        header: "Actions",
-        cell: ({ row }) => (
-          <div className="flex gap-2">
-            <CampaignCopyLinkAction campaign={row.original} baseURL={trackerBaseURL} />
-            <ActionIconButton
-              ariaLabel={`Build tracking URL for ${row.original.name}`}
-              icon="link"
-              label="Build tracking URL"
-              onClick={() => setLinkCampaign(row.original)}
-            />
-            <ActionIconButton
-              ariaLabel={`View streams for ${row.original.name}`}
-              icon="streams"
-              label="View streams"
-              onClick={() => navigate(`/campaigns/${encodeURIComponent(row.original.id)}/streams`)}
-            />
-            <ActionIconButton
-              ariaLabel={`Edit campaign ${row.original.name}`}
-              icon="edit"
-              label="Edit campaign"
-              onClick={() => {
-                setEditingCampaign(row.original);
-                setCampaignFormOpen(true);
-              }}
-            />
-          </div>
-        )
-      }
-    ],
-    [navigate, trackerBaseURL]
+  const structure = useQuery({
+    queryKey: ["campaign-structure"],
+    queryFn: api.campaignStructure
+  });
+  const structureByCampaign = new Map(
+    (structure.data?.items ?? []).map((item) => [item.campaign_id, item])
   );
-
+  const allCampaigns = campaigns.data?.items ?? [];
+  const currentCampaigns = allCampaigns.filter((campaign) => campaign.status !== "archived");
+  const archivedCampaigns = allCampaigns.filter((campaign) => campaign.status === "archived");
+  const visibleCampaigns = campaignTab === "archive" ? archivedCampaigns : currentCampaigns;
   const createCampaign = useMutation({
     mutationFn: api.createCampaign,
     onSuccess: () => {
       setCampaignFormOpen(false);
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
       void syncRouting(true);
     }
   });
@@ -857,13 +877,129 @@ function CampaignsPage() {
       void syncRouting(true);
     }
   });
-  const deleteCampaign = useMutation({
-    mutationFn: api.deleteCampaign,
+  const archiveCampaign = useMutation({
+    mutationFn: (campaign: Campaign) => api.updateCampaign(
+      campaign.id,
+      campaignRequestWithStatus(campaign, "archived")
+    ),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
       void syncRouting(true);
     }
   });
+  const restoreCampaign = useMutation({
+    mutationFn: (campaign: Campaign) => api.updateCampaign(
+      campaign.id,
+      campaignRequestWithStatus(campaign, "paused")
+    ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void syncRouting(true);
+    }
+  });
+  const deleteCampaign = useMutation({
+    mutationFn: api.deleteCampaign,
+    onSuccess: () => {
+      setDeleteCandidate(null);
+      void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
+      void syncRouting(true);
+    }
+  });
+  const columns: ColumnDef<Campaign>[] = [
+    { header: "Name", accessorKey: "name" },
+    {
+      header: "Streams",
+      cell: ({ row }) => (
+        <CampaignStructureCell
+          failed={structure.isError}
+          kind="streams"
+          loading={structure.isPending}
+          structure={structureByCampaign.get(row.original.id)}
+        />
+      )
+    },
+    {
+      header: "Destinations",
+      cell: ({ row }) => (
+        <CampaignStructureCell
+          failed={structure.isError}
+          kind="destinations"
+          loading={structure.isPending}
+          structure={structureByCampaign.get(row.original.id)}
+        />
+      )
+    },
+    { header: "Currency", accessorKey: "currency" },
+    { header: "Status", accessorKey: "status", cell: ({ row }) => <StatusIndicator status={row.original.status} /> },
+    {
+      header: "Actions",
+      cell: ({ row }) => (
+        <div className="flex gap-2">
+          {row.original.status !== "archived" ? (
+            <>
+              <CampaignCopyLinkAction campaign={row.original} baseURL={trackerBaseURL} key={row.original.id} />
+              <ActionIconButton
+                ariaLabel={`Build tracking URL for ${row.original.name}`}
+                icon="link"
+                label="Build tracking URL"
+                onClick={() => setLinkCampaign(row.original)}
+              />
+            </>
+          ) : null}
+          <ActionIconButton
+            ariaLabel={`View streams for ${row.original.name}`}
+            icon="streams"
+            label="View streams"
+            onClick={() => navigate(`/campaigns/${encodeURIComponent(row.original.id)}/streams`)}
+          />
+          <ActionIconButton
+            ariaLabel={`Open report for ${row.original.name}`}
+            icon="report"
+            label="Open campaign report"
+            onClick={() => navigate(`/reports?campaign_id=${encodeURIComponent(row.original.id)}`)}
+          />
+          {row.original.status === "archived" ? (
+            <>
+              <ActionIconButton
+                ariaLabel={`Restore campaign ${row.original.name} as paused`}
+                disabled={restoreCampaign.isPending}
+                icon="restore"
+                label="Restore as paused"
+                onClick={() => restoreCampaign.mutate(row.original)}
+              />
+              <ActionIconButton
+                ariaLabel={`Delete archived campaign ${row.original.name}`}
+                danger
+                icon="delete"
+                label="Delete archived campaign"
+                onClick={() => setDeleteCandidate(row.original)}
+              />
+            </>
+          ) : (
+            <>
+              <ActionIconButton
+                ariaLabel={`Edit campaign ${row.original.name}`}
+                icon="edit"
+                label="Edit campaign"
+                onClick={() => {
+                  setEditingCampaign(row.original);
+                  setCampaignFormOpen(true);
+                }}
+              />
+              <ActionIconButton
+                ariaLabel={`Archive campaign ${row.original.name}`}
+                disabled={archiveCampaign.isPending}
+                icon="archive"
+                label="Archive campaign"
+                onClick={() => archiveCampaign.mutate(row.original)}
+              />
+            </>
+          )}
+        </div>
+      )
+    }
+  ];
 
   return (
     <Page title="Campaigns">
@@ -886,7 +1022,47 @@ function CampaignsPage() {
             Create campaign
           </button>
         </div>
-        <DataTable columns={columns} data={campaigns.data?.items ?? []} />
+        <div className="mb-4 flex gap-2 border-b border-zinc-200" role="tablist" aria-label="Campaign status">
+          <button
+            aria-controls="campaigns-tab-panel"
+            aria-selected={campaignTab === "current"}
+            className={`px-3 py-2 text-sm ${campaignTab === "current" ? "border-b-2 border-zinc-900 font-semibold" : "text-zinc-500"}`}
+            onClick={() => setCampaignTab("current")}
+            id="campaigns-current-tab"
+            role="tab"
+            type="button"
+          >
+            Current ({currentCampaigns.length})
+          </button>
+          <button
+            aria-controls="campaigns-tab-panel"
+            aria-selected={campaignTab === "archive"}
+            className={`px-3 py-2 text-sm ${campaignTab === "archive" ? "border-b-2 border-zinc-900 font-semibold" : "text-zinc-500"}`}
+            onClick={() => setCampaignTab("archive")}
+            id="campaigns-archive-tab"
+            role="tab"
+            type="button"
+          >
+            Archive ({archivedCampaigns.length})
+          </button>
+        </div>
+        {archiveCampaign.error || restoreCampaign.error || structure.error ? (
+          <p role="alert" className="mb-3 text-sm text-red-700">
+            {archiveCampaign.error?.message ?? restoreCampaign.error?.message ?? structure.error?.message}
+          </p>
+        ) : null}
+        <div
+          aria-labelledby={campaignTab === "current" ? "campaigns-current-tab" : "campaigns-archive-tab"}
+          id="campaigns-tab-panel"
+          role="tabpanel"
+        >
+          {campaigns.isPending ? <p className="text-sm text-zinc-500">Loading campaigns…</p> : null}
+          {campaigns.isError ? <p role="alert" className="text-sm text-red-700">{campaigns.error.message}</p> : null}
+          {campaigns.isSuccess && visibleCampaigns.length === 0 ? (
+            <p className="text-sm text-zinc-500">{campaignTab === "archive" ? "No archived campaigns." : "No current campaigns."}</p>
+          ) : null}
+          {visibleCampaigns.length > 0 ? <DataTable columns={columns} data={visibleCampaigns} /> : null}
+        </div>
       </Panel>
       <Modal
         onClose={() => {
@@ -941,13 +1117,46 @@ function CampaignsPage() {
           )
         ) : null}
       </Modal>
-      <DangerList
-        items={campaigns.data?.items ?? []}
-        label={(campaign) => campaign.name}
-        onDelete={(campaign) => deleteCampaign.mutate(campaign.id)}
-      />
+      <Modal
+        onClose={() => setDeleteCandidate(null)}
+        open={deleteCandidate !== null}
+        title="Delete archived campaign"
+      >
+        <div className="space-y-4 text-sm">
+          <p>Delete <strong>{deleteCandidate?.name}</strong> permanently? This cannot be undone.</p>
+          <p className="text-zinc-600">Linked streams and historical analytics remain in storage.</p>
+          {deleteCampaign.error ? <p role="alert" className="text-red-700">{deleteCampaign.error.message}</p> : null}
+          <div className="flex justify-end gap-2">
+            <button className="button-secondary" onClick={() => setDeleteCandidate(null)} type="button">Cancel</button>
+            <button
+              className="rounded-md bg-red-700 px-4 py-2 font-medium text-white hover:bg-red-800 disabled:opacity-50"
+              disabled={deleteCampaign.isPending || deleteCandidate === null}
+              onClick={() => {
+                if (deleteCandidate) {
+                  deleteCampaign.mutate(deleteCandidate.id);
+                }
+              }}
+              type="button"
+            >
+              {deleteCampaign.isPending ? "Deleting…" : "Delete permanently"}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </Page>
   );
+}
+
+function campaignRequestWithStatus(campaign: Campaign, status: Status): CampaignRequest {
+  return {
+    name: campaign.name,
+    slug: campaign.slug,
+    status,
+    traffic_source_id: campaign.traffic_source_id,
+    currency: campaign.currency,
+    default_action: campaign.default_action,
+    trafficback_config: campaign.trafficback_config
+  };
 }
 
 function CampaignStreamsPage() {
@@ -1072,6 +1281,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
       ),
     onSuccess: () => {
       setStreamFormOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
       queryClient.invalidateQueries({
         queryKey: [
           "streams",
@@ -1090,6 +1300,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
     onSuccess: () => {
       setEditingStream(null);
       setStreamFormOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
       queryClient.invalidateQueries({
         queryKey: [
           "streams",
@@ -1104,6 +1315,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
     onSuccess: () => {
       setEditingStream(null);
       setStreamFormOpen(false);
+      void queryClient.invalidateQueries({ queryKey: ["campaign-structure"] });
       queryClient.invalidateQueries({
         queryKey: [
           "streams",
@@ -1117,7 +1329,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
     () => [
       { header: "Name", accessorKey: "name" },
       { header: "Priority", accessorKey: "priority" },
-      { header: "Status", accessorKey: "status" },
+      { header: "Status", accessorKey: "status", cell: ({ row }) => <StatusIndicator status={row.original.status} /> },
       {
         header: "Rules",
         cell: ({ row }) => row.original.conditions.length
@@ -1582,7 +1794,7 @@ function DestinationsPage() {
     () => [
       { header: "Name", accessorKey: "name" },
       { header: "URL", accessorKey: "url" },
-      { header: "Manual", accessorKey: "manual_status" },
+      { header: "Manual", accessorKey: "manual_status", cell: ({ row }) => <StatusIndicator status={row.original.manual_status} /> },
       {
         header: "Health",
         cell: ({ row }) => <DestinationHealthIndicator status={row.original.health_status} />
@@ -2277,6 +2489,8 @@ const defaultPostbackMapping = {
 };
 
 function ReportsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const campaignID = searchParams.get("campaign_id") ?? "";
   const defaultPeriod = useMemo(
     defaultReportPeriod,
     []
@@ -2285,12 +2499,16 @@ function ReportsPage() {
   const [chartMode, setChartMode] = useState<"volume" | "money" | "efficiency">("money");
   const [period, setPeriod] = useState(defaultPeriod);
   const reportFilters = useMemo(
-    () => reportDateRange(
-      period.from,
-      period.to
-    ),
+    () => ({
+      ...reportDateRange(
+        period.from,
+        period.to
+      ),
+      campaign_id: campaignID || undefined
+    }),
     [
-      period
+      period,
+      campaignID
     ]
   );
   const campaigns = useQuery({
@@ -2481,6 +2699,33 @@ function ReportsPage() {
         ))}
       </div>
       <Panel title="Period" className="mb-6">
+        <label className="mb-4 block max-w-sm text-sm font-medium">
+          Campaign
+          <select
+            className="input mt-2"
+            onChange={(event) => {
+              const selectedID = event.target.value;
+              setSearchParams((current) => {
+                const next = new URLSearchParams(current);
+                if (selectedID) {
+                  next.set("campaign_id", selectedID);
+                } else {
+                  next.delete("campaign_id");
+                }
+                return next;
+              });
+            }}
+            value={campaignID}
+          >
+            <option value="">All campaigns</option>
+            {campaignID && !campaigns.data?.items.some((campaign) => campaign.id === campaignID) ? (
+              <option value={campaignID}>{campaignID}</option>
+            ) : null}
+            {(campaigns.data?.items ?? []).map((campaign) => (
+              <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
+            ))}
+          </select>
+        </label>
         <div className="grid grid-cols-[repeat(2,minmax(180px,240px))_auto] items-end gap-3">
           <label className="text-sm font-medium">
             From
@@ -2656,17 +2901,20 @@ function MetricGrid({ metrics }: { metrics?: Metrics }) {
   );
 }
 
-type ActionIcon = "workspace" | "approve" | "streams" | "edit" | "check" | "delete" | "remove" | "close" | "copy" | "link";
+type ActionIcon = "workspace" | "approve" | "streams" | "report" | "edit" | "check" | "delete" | "remove" | "archive" | "restore" | "close" | "copy" | "link";
 
 function ActionIconGraphic({ icon }: { icon: ActionIcon }) {
   const shapes: Record<ActionIcon, React.ReactNode> = {
     workspace: <><path d="M14 3h7v18h-7" /><path d="m10 8 4 4-4 4M14 12H3" /></>,
     approve: <path d="m4 12 5 5L20 6" />,
     streams: <><rect x="4" y="4" width="16" height="4" rx="1" /><rect x="4" y="10" width="16" height="4" rx="1" /><rect x="4" y="16" width="16" height="4" rx="1" /></>,
+    report: <><path d="M4 20V4M4 20h16M8 16v-4M13 16V8M18 16V6" /></>,
     edit: <><path d="m4 20 4.5-1 11-11a2.1 2.1 0 0 0-3-3l-11 11L4 20Z" /><path d="m14.5 7.5 3 3" /></>,
     check: <><path d="M3 12h4l3-7 4 14 3-7h4" /></>,
     delete: <><path d="M4 7h16M10 3h4M6 7l1 14h10l1-14M10 11v6M14 11v6" /></>,
     remove: <><circle cx="12" cy="12" r="9" /><path d="M8 12h8" /></>,
+    archive: <><path d="M4 7h16v13H4V7ZM3 4h18v3H3V4ZM12 10v7m-3-3 3 3 3-3" /></>,
+    restore: <><path d="M4 7h16v13H4V7ZM3 4h18v3H3V4ZM12 17v-7m-3 3 3-3 3 3" /></>,
     close: <path d="M5 5l14 14M19 5 5 19" />,
     copy: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
     link: <><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1" /><path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1" /></>
@@ -2762,31 +3010,6 @@ function DataTable<T>({ columns, data }: { columns: ColumnDef<T>[]; data: T[] })
         ))}
       </tbody>
     </table>
-  );
-}
-
-function DangerList<T>({
-  items,
-  label,
-  onDelete
-}: {
-  items: T[];
-  label: (item: T) => string;
-  onDelete: (item: T) => void;
-}) {
-  if (items.length === 0) {
-    return null;
-  }
-  return (
-    <Panel title="Danger zone" className="mt-4">
-      <div className="flex flex-wrap gap-2">
-        {items.map((item) => (
-          <button className="button-secondary" key={label(item)} onClick={() => onDelete(item)} type="button">
-            Delete {label(item)}
-          </button>
-        ))}
-      </div>
-    </Panel>
   );
 }
 

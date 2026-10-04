@@ -25,6 +25,10 @@ type StreamRequest struct {
 }
 
 type Repository interface {
+	ListAll(ctx context.Context) (
+		[]models.Stream,
+		error,
+	)
 	ListByCampaign(
 		ctx context.Context,
 		campaignID string,

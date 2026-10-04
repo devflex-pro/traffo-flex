@@ -14,6 +14,7 @@ import (
 type Handler struct {
 	log     *slog.Logger
 	service *Service
+	streams StructureStreamReader
 }
 
 func NewHandler(log *slog.Logger) *Handler {

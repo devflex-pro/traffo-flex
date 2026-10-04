@@ -223,6 +223,19 @@ func (s *Service) Delete(
 			errors.New("campaign id is required"),
 		)
 	}
+	campaign, err := s.repo.Get(
+		ctx,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	if campaign.Status != models.StatusArchived {
+		return errors.Join(
+			ErrInvalidInput,
+			errors.New("campaign must be archived before deletion"),
+		)
+	}
 	return s.repo.Delete(
 		ctx,
 		id,

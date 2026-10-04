@@ -123,6 +123,7 @@ func NewRouterWithOptions(
 			campaigns.NewService(opts.CampaignRepository),
 		)
 	}
+	campaignHandler.SetStructureReader(opts.StreamRepository)
 	destinationHandler := destinations.NewHandler(log)
 	if opts.DestinationRepository != nil {
 		destinationHandler = destinations.NewHandlerWithService(
@@ -286,6 +287,10 @@ func registerProtectedRoutes(
 	r.Get(
 		"/campaigns",
 		campaignHandler.List,
+	)
+	r.Get(
+		"/campaigns/structure",
+		campaignHandler.Structure,
 	)
 	r.Post(
 		"/campaigns",
