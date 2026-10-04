@@ -24,6 +24,7 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 - Allow manual destination probes before a campaign is active and require a
   trafficback destination when activating a campaign.
 - Use the correct healthcheck address for the local admin frontend container.
+- Provide a tracker domain to the production Compose validation step in CI.
 
 ## [v0.1.1] - 2026-10-04
 
