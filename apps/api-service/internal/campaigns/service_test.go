@@ -103,3 +103,103 @@ func TestServiceCRUD(t *testing.T) {
 		)
 	}
 }
+
+func TestServiceSavesAndUpdatesTrafficback(t *testing.T) {
+	service := NewService(NewMemoryRepository())
+	ctx := context.Background()
+	created, err := service.Create(
+		ctx,
+		CampaignRequest{
+			Name: "Trafficback campaign",
+			Slug: "trafficback-campaign",
+			Trafficback: &models.TrafficbackConfig{
+				Enabled:  true,
+				URL:      " https://example.org/fallback?depth={trafficback_depth} ",
+				MaxDepth: 3,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf(
+			"create campaign: %v",
+			err,
+		)
+	}
+	if !created.TrafficbackConfig.Enabled ||
+		created.TrafficbackConfig.URL != "https://example.org/fallback?depth={trafficback_depth}" ||
+		created.TrafficbackConfig.MaxDepth != 3 {
+		t.Fatalf(
+			"unexpected created trafficback config: %#v",
+			created.TrafficbackConfig,
+		)
+	}
+
+	updated, err := service.Update(
+		ctx,
+		created.ID,
+		CampaignRequest{
+			Name: "Trafficback campaign",
+			Slug: "trafficback-campaign",
+		},
+	)
+	if err != nil {
+		t.Fatalf(
+			"update campaign without trafficback field: %v",
+			err,
+		)
+	}
+	if !updated.TrafficbackConfig.Enabled {
+		t.Fatal("omitted trafficback field cleared existing config")
+	}
+
+	updated, err = service.Update(
+		ctx,
+		created.ID,
+		CampaignRequest{
+			Name:        "Trafficback campaign",
+			Slug:        "trafficback-campaign",
+			Trafficback: &models.TrafficbackConfig{},
+		},
+	)
+	if err != nil {
+		t.Fatalf(
+			"disable trafficback: %v",
+			err,
+		)
+	}
+	if updated.TrafficbackConfig.Enabled || updated.TrafficbackConfig.URL != "" {
+		t.Fatalf(
+			"trafficback remained enabled: %#v",
+			updated.TrafficbackConfig,
+		)
+	}
+}
+
+func TestServiceRejectsInvalidTrafficback(t *testing.T) {
+	service := NewService(NewMemoryRepository())
+	for _, config := range []models.TrafficbackConfig{
+		{Enabled: true, URL: "", MaxDepth: 3},
+		{Enabled: true, URL: "javascript:alert(1)", MaxDepth: 3},
+		{Enabled: true, URL: "https://example.org/fallback", MaxDepth: 0},
+		{Enabled: true, URL: "https://example.org/fallback", MaxDepth: 11},
+	} {
+		_, err := service.Create(
+			context.Background(),
+			CampaignRequest{
+				Name:        "Invalid trafficback",
+				Slug:        "invalid-trafficback",
+				Trafficback: &config,
+			},
+		)
+		if !errors.Is(
+			err,
+			ErrInvalidInput,
+		) {
+			t.Fatalf(
+				"config %#v returned %v, want ErrInvalidInput",
+				config,
+				err,
+			)
+		}
+	}
+}

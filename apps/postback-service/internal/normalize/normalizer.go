@@ -1,6 +1,7 @@
 package normalize
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -16,9 +17,17 @@ var (
 type Template struct {
 	NetworkID string
 	Secret    string
+	Secrets   []string
+	Credentials []Credential
+}
+
+type Credential struct {
+	OwnerID string
+	Secret string
 }
 
 type Conversion struct {
+	OwnerID       string            `json:"owner_id,omitempty"`
 	NetworkID     string            `json:"network_id"`
 	ClickID       string            `json:"click_id"`
 	TransactionID string            `json:"transaction_id"`
@@ -86,10 +95,13 @@ func normalizePayload(
 	Conversion,
 	error,
 ) {
-	if err := validateSecret(
+	ownerID, err := validateSecret(
 		payload,
 		template.Secret,
-	); err != nil {
+		template.Secrets,
+		template.Credentials,
+	)
+	if err != nil {
 		return Conversion{}, err
 	}
 
@@ -119,6 +131,7 @@ func normalizePayload(
 	}
 
 	return Conversion{
+		OwnerID:       ownerID,
 		NetworkID:     template.NetworkID,
 		ClickID:       clickID,
 		TransactionID: transactionID,
@@ -141,26 +154,73 @@ func normalizePayload(
 			payload["currency"],
 			"USD",
 		),
-		RawPayload: payload,
+		RawPayload: redactSecrets(payload),
 	}, nil
 }
 
 func validateSecret(
 	payload map[string]string,
 	secret string,
-) error {
-	if secret == "" {
-		return nil
+	secrets []string,
+	credentials []Credential,
+) (string, error) {
+	if secret == "" && len(secrets) == 0 && len(credentials) == 0 {
+		return "", nil
 	}
 	got := first(
 		payload["secret"],
 		payload["token"],
 		payload["key"],
 	)
-	if got != secret {
-		return ErrUnauthorized
+	if got == "" {
+		return "", ErrUnauthorized
 	}
-	return nil
+	if secret != "" && subtle.ConstantTimeCompare(
+		[]byte(got),
+		[]byte(secret),
+	) == 1 {
+		return "", nil
+	}
+	for _, candidate := range secrets {
+		if candidate != "" && subtle.ConstantTimeCompare(
+			[]byte(got),
+			[]byte(candidate),
+		) == 1 {
+			return "", nil
+		}
+	}
+	ownerID := ""
+	matched := false
+	for _, candidate := range credentials {
+		if candidate.Secret == "" || subtle.ConstantTimeCompare(
+			[]byte(got),
+			[]byte(candidate.Secret),
+		) != 1 {
+			continue
+		}
+		if matched && ownerID != candidate.OwnerID {
+			return "", ErrUnauthorized
+		}
+		ownerID = candidate.OwnerID
+		matched = true
+	}
+	if !matched {
+		return "", ErrUnauthorized
+	}
+	return ownerID, nil
+}
+
+func redactSecrets(payload map[string]string) map[string]string {
+	redacted := make(map[string]string, len(payload))
+	for key, value := range payload {
+		switch key {
+		case "secret", "token", "key":
+			continue
+		default:
+			redacted[key] = value
+		}
+	}
+	return redacted
 }
 
 func valuesToMap(values map[string][]string) map[string]string {

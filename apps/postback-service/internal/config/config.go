@@ -10,21 +10,19 @@ import (
 )
 
 type Config struct {
-	Addr               string
-	MongoURI           string
-	MongoDatabase      string
-	ClickHouseHTTPURL  string
-	EventBrokers       []string
-	ConversionTopic    string
-	PostbackLogTopic   string
-	EventBatchSize     int
-	EventBatchTimeout  time.Duration
-	EventWriteTimeout  time.Duration
-	EventMaxAttempts   int
-	EventRetryBackoff  time.Duration
-	EventFailurePolicy string
-	ClickLookupTimeout time.Duration
-	ClickLookupPolicy  string
+	Addr              string
+	MongoURI          string
+	MongoDatabase     string
+	ClickHouseHTTPURL string
+	EventBrokers      []string
+	ConversionTopic   string
+	AttributionTopic  string
+	PostbackLogTopic  string
+	EventBatchSize    int
+	EventBatchTimeout time.Duration
+	EventWriteTimeout time.Duration
+	EventMaxAttempts  int
+	EventRetryBackoff time.Duration
 }
 
 func Load() Config {
@@ -53,6 +51,10 @@ func Load() Config {
 			"CONVERSION_EVENTS_TOPIC",
 			"traffoflex.conversion_events",
 		),
+		AttributionTopic: sharedconfig.Env(
+			"ATTRIBUTED_CONVERSION_EVENTS_TOPIC",
+			"traffoflex.attributed_conversion_events",
+		),
 		PostbackLogTopic: sharedconfig.Env(
 			"POSTBACK_LOG_EVENTS_TOPIC",
 			"traffoflex.postback_log_events",
@@ -77,18 +79,6 @@ func Load() Config {
 			"EVENT_WRITE_RETRY_BACKOFF_MS",
 			100,
 		)) * time.Millisecond,
-		EventFailurePolicy: sharedconfig.Env(
-			"EVENT_WRITE_FAILURE_POLICY",
-			"fail_closed",
-		),
-		ClickLookupTimeout: time.Duration(sharedconfig.EnvInt(
-			"CLICK_LOOKUP_TIMEOUT_MS",
-			1000,
-		)) * time.Millisecond,
-		ClickLookupPolicy: sharedconfig.Env(
-			"CLICK_LOOKUP_FAILURE_POLICY",
-			"fail_open",
-		),
 	}
 }
 
@@ -115,7 +105,6 @@ func (c Config) Validate() error {
 			"https",
 		),
 		validateEventStream(c),
-		validateClickLookup(c),
 	)
 }
 
@@ -136,13 +125,14 @@ func validateEventStream(c Config) error {
 	if c.EventRetryBackoff <= 0 {
 		return errors.New("EVENT_WRITE_RETRY_BACKOFF_MS must be positive")
 	}
-	if c.EventFailurePolicy != "fail_open" && c.EventFailurePolicy != "fail_closed" {
-		return errors.New("EVENT_WRITE_FAILURE_POLICY must be fail_open or fail_closed")
-	}
 	return errors.Join(
 		sharedconfig.RequireNonEmpty(
 			"CONVERSION_EVENTS_TOPIC",
 			c.ConversionTopic,
+		),
+		sharedconfig.RequireNonEmpty(
+			"ATTRIBUTED_CONVERSION_EVENTS_TOPIC",
+			c.AttributionTopic,
 		),
 		sharedconfig.RequireNonEmpty(
 			"POSTBACK_LOG_EVENTS_TOPIC",
@@ -157,16 +147,6 @@ func validateEventStream(c Config) error {
 			c.EventMaxAttempts,
 		),
 	)
-}
-
-func validateClickLookup(c Config) error {
-	if c.ClickLookupTimeout <= 0 {
-		return errors.New("CLICK_LOOKUP_TIMEOUT_MS must be positive")
-	}
-	if c.ClickLookupPolicy != "fail_open" && c.ClickLookupPolicy != "fail_closed" {
-		return errors.New("CLICK_LOOKUP_FAILURE_POLICY must be fail_open or fail_closed")
-	}
-	return nil
 }
 
 func splitCSV(value string) []string {

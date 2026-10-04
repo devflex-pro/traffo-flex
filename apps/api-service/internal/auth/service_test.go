@@ -148,6 +148,105 @@ func TestInvalidOTPRejected(t *testing.T) {
 	}
 }
 
+func TestOTPAttemptsLimitedAndResetWithNewCode(t *testing.T) {
+	service := newTestService()
+	now := time.Date(
+		2026,
+		10,
+		4,
+		12,
+		0,
+		0,
+		0,
+		time.UTC,
+	)
+	service.now = func() time.Time { return now }
+	challenge, err := service.RequestOTP(
+		context.Background(),
+		"admin@example.com",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < maxOTPAttempts; attempt++ {
+		_, err = service.VerifyOTP(
+			context.Background(),
+			"admin@example.com",
+			"invalid",
+		)
+		if !errors.Is(err, ErrInvalidOTP) {
+			t.Fatalf(
+				"attempt %d: %v",
+				attempt,
+				err,
+			)
+		}
+	}
+	_, err = service.VerifyOTP(
+		context.Background(),
+		"admin@example.com",
+		challenge.OTP,
+	)
+	if !errors.Is(err, ErrOTPAttempts) {
+		t.Fatalf(
+			"correct code after lockout = %v",
+			err,
+		)
+	}
+	now = now.Add(13 * time.Minute)
+	challenge, err = service.RequestOTP(
+		context.Background(),
+		"admin@example.com",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.VerifyOTP(
+		context.Background(),
+		"admin@example.com",
+		challenge.OTP,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLogoutRevokesAllUserSessions(t *testing.T) {
+	service := newTestService()
+	challenge, err := service.RequestOTP(
+		context.Background(),
+		"admin@example.com",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := service.VerifyOTP(
+		context.Background(),
+		"admin@example.com",
+		challenge.OTP,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Logout(
+		context.Background(),
+		session.Token,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Authenticate(
+		context.Background(),
+		session.Token,
+	); !errors.Is(
+		err,
+		ErrInvalidToken,
+	) {
+		t.Fatalf(
+			"revoked token = %v",
+			err,
+		)
+	}
+}
+
 func TestRequestOTPRejectsActiveOTP(t *testing.T) {
 	service := newTestService()
 	_, err := service.RequestOTP(

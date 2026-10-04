@@ -2,14 +2,18 @@ package postbacktemplates
 
 import (
 	"context"
+	"errors"
 
 	"github.com/devflex/traffoflex/apps/api-service/internal/mongostore"
+	"github.com/devflex/traffoflex/apps/api-service/internal/scope"
 	"github.com/devflex/traffoflex/packages/go-shared/models"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type MongoRepository struct {
-	store *mongostore.Store[models.PostbackTemplate]
+	store    *mongostore.Store[models.PostbackTemplate]
+	networks *mongo.Collection
 }
 
 func NewMongoRepository(db *mongo.Database) *MongoRepository {
@@ -19,6 +23,7 @@ func NewMongoRepository(db *mongo.Database) *MongoRepository {
 			ErrInvalidInput,
 			ErrNotFound,
 		),
+		networks: db.Collection("affiliate_networks"),
 	}
 }
 
@@ -49,6 +54,9 @@ func (r *MongoRepository) Create(
 	models.PostbackTemplate,
 	error,
 ) {
+	if err := r.validateNetwork(ctx, template.NetworkID); err != nil {
+		return models.PostbackTemplate{}, err
+	}
 	return r.store.Create(
 		ctx,
 		template.ID,
@@ -63,11 +71,35 @@ func (r *MongoRepository) Update(
 	models.PostbackTemplate,
 	error,
 ) {
+	if err := r.validateNetwork(ctx, template.NetworkID); err != nil {
+		return models.PostbackTemplate{}, err
+	}
 	return r.store.Update(
 		ctx,
 		template.ID,
 		template,
 	)
+}
+
+func (r *MongoRepository) validateNetwork(
+	ctx context.Context,
+	networkID string,
+) error {
+	ownerID := scope.OwnerID(ctx)
+	if ownerID == "" || networkID == "" {
+		return nil
+	}
+	count, err := r.networks.CountDocuments(
+		ctx,
+		bson.M{"id": networkID, "owner_id": ownerID},
+	)
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return errors.Join(ErrInvalidInput, errors.New("affiliate network is unavailable"))
+	}
+	return nil
 }
 
 func (r *MongoRepository) Delete(

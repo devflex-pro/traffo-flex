@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,25 +12,42 @@ import (
 )
 
 type Config struct {
-	Addr                   string
-	MongoURI               string
-	MongoDatabase          string
-	ClickHouseHTTPURL      string
-	EventBrokers           []string
-	ClickEventsTopic       string
-	TrafficbackTopic       string
-	HealthEventsTopic      string
-	EventBatchSize         int
-	EventBatchTimeout      time.Duration
-	EventWriteTimeout      time.Duration
-	EventMaxAttempts       int
-	EventRetryBackoff      time.Duration
-	EventFailurePolicy     string
-	HealthcheckTimeout     time.Duration
-	HealthcheckInterval    time.Duration
-	DestinationCapCacheTTL time.Duration
-	TrustedProxyCIDRs      []string
-	TrustedIPHeaders       []string
+	Addr                         string
+	MongoURI                     string
+	MongoDatabase                string
+	ClickHouseHTTPURL            string
+	EventBrokers                 []string
+	ClickEventsTopic             string
+	TrafficbackTopic             string
+	HealthEventsTopic            string
+	EventBatchSize               int
+	EventBatchTimeout            time.Duration
+	EventWriteTimeout            time.Duration
+	EventMaxAttempts             int
+	EventRetryBackoff            time.Duration
+	EventFailurePolicy           string
+	EventQueueSize               int
+	EventDrainTimeout            time.Duration
+	ClickWALPath                 string
+	ClickWALMaxBytes             int64
+	ClickWALSegmentBytes         int64
+	ClickWALRetryDelay           time.Duration
+	HealthcheckTimeout           time.Duration
+	HealthcheckInterval          time.Duration
+	HealthcheckFailures          int
+	HealthcheckRecovery          int
+	HealthcheckParallelism       int
+	DestinationCapCacheTTL       time.Duration
+	BloomExpectedKeys            int
+	BloomFalsePositiveRate       float64
+	BloomMaxMemoryMB             int
+	BloomBucketCount             int
+	BloomSnapshotPath            string
+	BloomSnapshotInterval        time.Duration
+	RoutingSnapshotPath          string
+	CampaignCacheRefreshInterval time.Duration
+	TrustedProxyCIDRs            []string
+	TrustedIPHeaders             []string
 }
 
 func Load() Config {
@@ -72,7 +90,7 @@ func Load() Config {
 		),
 		EventBatchTimeout: time.Duration(sharedconfig.EnvInt(
 			"EVENT_BATCH_TIMEOUT_MS",
-			1000,
+			10,
 		)) * time.Millisecond,
 		EventWriteTimeout: time.Duration(sharedconfig.EnvInt(
 			"EVENT_WRITE_TIMEOUT_MS",
@@ -90,6 +108,18 @@ func Load() Config {
 			"EVENT_WRITE_FAILURE_POLICY",
 			"fail_open",
 		),
+		EventQueueSize: sharedconfig.EnvInt(
+			"EVENT_QUEUE_SIZE",
+			10000,
+		),
+		EventDrainTimeout: time.Duration(sharedconfig.EnvInt(
+			"EVENT_DRAIN_TIMEOUT_MS",
+			8000,
+		)) * time.Millisecond,
+		ClickWALPath:         sharedconfig.Env("CLICK_WAL_PATH", "/data/click-wal"),
+		ClickWALMaxBytes:     int64(sharedconfig.EnvInt("CLICK_WAL_MAX_MB", 2048)) * 1024 * 1024,
+		ClickWALSegmentBytes: int64(sharedconfig.EnvInt("CLICK_WAL_SEGMENT_MB", 16)) * 1024 * 1024,
+		ClickWALRetryDelay:   time.Duration(sharedconfig.EnvInt("CLICK_WAL_RETRY_MS", 1000)) * time.Millisecond,
 		HealthcheckTimeout: time.Duration(sharedconfig.EnvInt(
 			"DESTINATION_HEALTHCHECK_TIMEOUT_MS",
 			5000,
@@ -98,10 +128,21 @@ func Load() Config {
 			"DESTINATION_HEALTHCHECK_INTERVAL_MS",
 			60000,
 		)) * time.Millisecond,
+		HealthcheckFailures:    sharedconfig.EnvInt("DESTINATION_HEALTHCHECK_FAILURES", 3),
+		HealthcheckRecovery:    sharedconfig.EnvInt("DESTINATION_HEALTHCHECK_RECOVERY", 2),
+		HealthcheckParallelism: sharedconfig.EnvInt("DESTINATION_HEALTHCHECK_PARALLELISM", 4),
 		DestinationCapCacheTTL: time.Duration(sharedconfig.EnvInt(
 			"DESTINATION_CAP_CACHE_TTL_MS",
 			10000,
 		)) * time.Millisecond,
+		BloomExpectedKeys:            sharedconfig.EnvInt("BLOOM_EXPECTED_KEYS_PER_BUCKET", 50000),
+		BloomFalsePositiveRate:       envFloat("BLOOM_FALSE_POSITIVE_RATE", 0.001),
+		BloomMaxMemoryMB:             sharedconfig.EnvInt("BLOOM_MAX_MEMORY_MB", 512),
+		BloomBucketCount:             sharedconfig.EnvInt("BLOOM_BUCKET_COUNT", 24),
+		BloomSnapshotPath:            sharedconfig.Env("BLOOM_SNAPSHOT_PATH", "/data/bloom/snapshot.gob"),
+		BloomSnapshotInterval:        time.Duration(sharedconfig.EnvInt("BLOOM_SNAPSHOT_INTERVAL_MS", 30000)) * time.Millisecond,
+		RoutingSnapshotPath:          sharedconfig.Env("ROUTING_SNAPSHOT_PATH", "/data/cache/campaigns.json"),
+		CampaignCacheRefreshInterval: time.Duration(sharedconfig.EnvInt("CAMPAIGN_CACHE_REFRESH_INTERVAL_MS", 30000)) * time.Millisecond,
 		TrustedProxyCIDRs: splitCSV(sharedconfig.Env(
 			"TRUSTED_PROXY_CIDRS",
 			"",
@@ -111,6 +152,14 @@ func Load() Config {
 			"X-Forwarded-For,X-Real-IP",
 		)),
 	}
+}
+
+func envFloat(key string, fallback float64) float64 {
+	value, err := strconv.ParseFloat(sharedconfig.Env(key, strconv.FormatFloat(fallback, 'f', -1, 64)), 64)
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 func (c Config) Validate() error {
@@ -139,7 +188,16 @@ func (c Config) Validate() error {
 		validateHealthcheck(c),
 		validateDestinationCaps(c),
 		validateCIDRs(c.TrustedProxyCIDRs),
+		sharedconfig.RequireNonEmpty("ROUTING_SNAPSHOT_PATH", c.RoutingSnapshotPath),
+		validateCampaignCache(c.CampaignCacheRefreshInterval),
 	)
+}
+
+func validateCampaignCache(interval time.Duration) error {
+	if interval <= 0 {
+		return errors.New("CAMPAIGN_CACHE_REFRESH_INTERVAL_MS must be positive")
+	}
+	return nil
 }
 
 func (c Config) Ready(r *http.Request) error {
@@ -193,6 +251,15 @@ func validateEventStream(c Config) error {
 	if c.EventFailurePolicy != "fail_open" && c.EventFailurePolicy != "fail_closed" {
 		return errors.New("EVENT_WRITE_FAILURE_POLICY must be fail_open or fail_closed")
 	}
+	if c.EventQueueSize <= 0 {
+		return errors.New("EVENT_QUEUE_SIZE must be positive")
+	}
+	if c.EventDrainTimeout <= 0 {
+		return errors.New("EVENT_DRAIN_TIMEOUT_MS must be positive")
+	}
+	if c.ClickWALPath == "" || c.ClickWALMaxBytes <= 0 || c.ClickWALSegmentBytes <= 0 || c.ClickWALSegmentBytes > c.ClickWALMaxBytes || c.ClickWALRetryDelay <= 0 {
+		return errors.New("invalid click WAL configuration")
+	}
 	return errors.Join(
 		sharedconfig.RequireNonEmpty(
 			"CLICK_EVENTS_TOPIC",
@@ -223,6 +290,9 @@ func validateHealthcheck(c Config) error {
 	}
 	if c.HealthcheckInterval <= 0 {
 		return errors.New("DESTINATION_HEALTHCHECK_INTERVAL_MS must be positive")
+	}
+	if c.HealthcheckFailures <= 0 || c.HealthcheckRecovery <= 0 || c.HealthcheckParallelism <= 0 || c.HealthcheckParallelism > 32 {
+		return errors.New("destination healthcheck thresholds or parallelism are invalid")
 	}
 	return nil
 }

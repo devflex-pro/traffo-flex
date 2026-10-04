@@ -4,6 +4,7 @@ import "time"
 
 type RequestContext struct {
 	ClickID          string            `json:"click_id"`
+	OwnerID          string            `json:"owner_id,omitempty"`
 	CampaignID       string            `json:"campaign_id"`
 	StreamID         string            `json:"stream_id,omitempty"`
 	DestinationID    string            `json:"destination_id,omitempty"`
@@ -39,6 +40,7 @@ type UTM struct {
 
 type ClickEvent struct {
 	ClickID       string            `json:"click_id"`
+	OwnerID       string            `json:"owner_id,omitempty"`
 	CampaignID    string            `json:"campaign_id"`
 	StreamID      string            `json:"stream_id,omitempty"`
 	DestinationID string            `json:"destination_id,omitempty"`
@@ -70,6 +72,7 @@ type ClickEvent struct {
 
 type ConversionEvent struct {
 	ConversionID  string            `json:"conversion_id"`
+	OwnerID       string            `json:"owner_id,omitempty"`
 	ClickID       string            `json:"click_id"`
 	TransactionID string            `json:"transaction_id"`
 	CampaignID    string            `json:"campaign_id,omitempty"`
@@ -89,6 +92,7 @@ type ConversionEvent struct {
 
 type PostbackLogEvent struct {
 	PostbackID    string            `json:"postback_id"`
+	OwnerID       string            `json:"owner_id,omitempty"`
 	NetworkID     string            `json:"network_id"`
 	ClickID       string            `json:"click_id,omitempty"`
 	TransactionID string            `json:"transaction_id,omitempty"`
@@ -100,6 +104,7 @@ type PostbackLogEvent struct {
 
 type TrafficbackEvent struct {
 	ClickID             string            `json:"click_id"`
+	OwnerID             string            `json:"owner_id,omitempty"`
 	CampaignID          string            `json:"campaign_id"`
 	StreamID            string            `json:"stream_id,omitempty"`
 	DestinationID       string            `json:"destination_id,omitempty"`
@@ -111,6 +116,7 @@ type TrafficbackEvent struct {
 
 type DestinationHealthEvent struct {
 	DestinationID string       `json:"destination_id"`
+	OwnerID       string       `json:"owner_id,omitempty"`
 	Previous      HealthStatus `json:"previous"`
 	Current       HealthStatus `json:"current"`
 	Error         string       `json:"error,omitempty"`

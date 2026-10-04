@@ -2,6 +2,7 @@ package availability
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -68,6 +69,21 @@ func NewEvaluator(
 	}
 }
 
+func NewEvaluatorWithSources(
+	log *slog.Logger,
+	caps CapChecker,
+	history HistoryChecker,
+	roi ROIRanker,
+) *Evaluator {
+	return &Evaluator{
+		log:     log,
+		caps:    caps,
+		history: history,
+		roi:     roi,
+		nowFunc: func() time.Time { return time.Now().UTC() },
+	}
+}
+
 func NewEvaluatorWithClock(
 	log *slog.Logger,
 	caps CapChecker,
@@ -129,6 +145,9 @@ func (e *Evaluator) filterAvailable(
 			now,
 		)
 		if err != nil {
+			if errors.Is(err, ErrCapSnapshotMissing) {
+				continue
+			}
 			e.warn(
 				"destination cap check failed",
 				"destination_id",

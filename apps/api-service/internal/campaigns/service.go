@@ -3,6 +3,7 @@ package campaigns
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 
@@ -16,12 +17,13 @@ var (
 )
 
 type CampaignRequest struct {
-	Name            string        `json:"name"`
-	Slug            string        `json:"slug"`
-	Status          models.Status `json:"status"`
-	TrafficSourceID string        `json:"traffic_source_id,omitempty"`
-	Currency        string        `json:"currency,omitempty"`
-	DefaultAction   string        `json:"default_action,omitempty"`
+	Name            string                    `json:"name"`
+	Slug            string                    `json:"slug"`
+	Status          models.Status             `json:"status"`
+	TrafficSourceID string                    `json:"traffic_source_id,omitempty"`
+	Currency        string                    `json:"currency,omitempty"`
+	DefaultAction   string                    `json:"default_action,omitempty"`
+	Trafficback     *models.TrafficbackConfig `json:"trafficback_config,omitempty"`
 }
 
 type Repository interface {
@@ -126,15 +128,16 @@ func (s *Service) Create(
 
 	now := time.Now().UTC()
 	return s.repo.Create(ctx, models.Campaign{
-		ID:              ids.New("cmp"),
-		Name:            strings.TrimSpace(req.Name),
-		Slug:            strings.TrimSpace(req.Slug),
-		Status:          req.Status,
-		TrafficSourceID: strings.TrimSpace(req.TrafficSourceID),
-		Currency:        strings.ToUpper(strings.TrimSpace(req.Currency)),
-		DefaultAction:   strings.TrimSpace(req.DefaultAction),
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                ids.New("cmp"),
+		Name:              strings.TrimSpace(req.Name),
+		Slug:              strings.TrimSpace(req.Slug),
+		Status:            req.Status,
+		TrafficSourceID:   strings.TrimSpace(req.TrafficSourceID),
+		Currency:          strings.ToUpper(strings.TrimSpace(req.Currency)),
+		DefaultAction:     strings.TrimSpace(req.DefaultAction),
+		TrafficbackConfig: normalizeTrafficback(req.Trafficback),
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	})
 }
 
@@ -176,6 +179,9 @@ func (s *Service) Update(
 	existing.TrafficSourceID = strings.TrimSpace(req.TrafficSourceID)
 	existing.Currency = strings.ToUpper(strings.TrimSpace(req.Currency))
 	existing.DefaultAction = strings.TrimSpace(req.DefaultAction)
+	if req.Trafficback != nil {
+		existing.TrafficbackConfig = normalizeTrafficback(req.Trafficback)
+	}
 	existing.UpdatedAt = time.Now().UTC()
 
 	return s.repo.Update(
@@ -225,5 +231,31 @@ func validateRequest(req CampaignRequest) error {
 			err,
 		)
 	}
+	if req.Trafficback != nil && req.Trafficback.Enabled {
+		parsed, err := url.Parse(strings.TrimSpace(req.Trafficback.URL))
+		if err != nil || parsed == nil ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+			parsed.Hostname() == "" || parsed.User != nil {
+			return errors.Join(
+				ErrInvalidInput,
+				errors.New("trafficback URL must be an absolute HTTP or HTTPS URL"),
+			)
+		}
+		if req.Trafficback.MaxDepth < 1 || req.Trafficback.MaxDepth > 10 {
+			return errors.Join(
+				ErrInvalidInput,
+				errors.New("trafficback max depth must be between 1 and 10"),
+			)
+		}
+	}
 	return nil
+}
+
+func normalizeTrafficback(config *models.TrafficbackConfig) models.TrafficbackConfig {
+	if config == nil || !config.Enabled {
+		return models.TrafficbackConfig{}
+	}
+	result := *config
+	result.URL = strings.TrimSpace(result.URL)
+	return result
 }

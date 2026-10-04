@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/devflex/traffoflex/apps/api-service/internal/scope"
 	"github.com/devflex/traffoflex/packages/go-shared/httpx"
 	"github.com/go-chi/chi/v5"
 )
@@ -15,6 +16,8 @@ type Handler struct {
 	log     *slog.Logger
 	service *Service
 }
+
+const sessionCookieName = "tf_session"
 
 func NewHandler(
 	log *slog.Logger,
@@ -108,14 +111,59 @@ func (h *Handler) VerifyOTP(
 		)
 		return
 	}
+	http.SetCookie(
+		w,
+		&http.Cookie{
+			Name:     sessionCookieName,
+			Value:    session.Token,
+			Path:     "/api",
+			MaxAge:   int(h.service.cfg.SessionTTL.Seconds()),
+			HttpOnly: true,
+			Secure:   h.service.cfg.CookieSecure,
+			SameSite: http.SameSiteLaxMode,
+		},
+	)
+	response := map[string]any{"user": publicUser(session.User)}
+	if h.service.cfg.DevReturnOTP {
+		response["token"] = session.Token
+	}
 	h.respondJSON(
 		w,
 		http.StatusOK,
-		map[string]any{
-			"token": session.Token,
-			"user":  publicUser(session.User),
+		response,
+	)
+}
+
+func (h *Handler) Logout(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		h.respondError(
+			w,
+			http.StatusUnauthorized,
+			"authentication required",
+			err,
+		)
+		return
+	}
+	if err := h.service.Logout(r.Context(), cookie.Value); err != nil {
+		h.respondServiceError(w, err)
+		return
+	}
+	http.SetCookie(
+		w,
+		&http.Cookie{
+			Name:     sessionCookieName,
+			Path:     "/api",
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   h.service.cfg.CookieSecure,
+			SameSite: http.SameSiteLaxMode,
 		},
 	)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) Me(
@@ -217,11 +265,25 @@ func (h *Handler) Middleware(next http.Handler) http.Handler {
 		w http.ResponseWriter,
 		r *http.Request,
 	) {
-		header := strings.TrimSpace(r.Header.Get("Authorization"))
-		if !strings.HasPrefix(
-			header,
-			"Bearer ",
-		) {
+		token := ""
+		cookie, cookieErr := r.Cookie(sessionCookieName)
+		if cookieErr == nil {
+			token = cookie.Value
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+				if r.Header.Get("X-TraffoFlex-CSRF") != "1" ||
+					r.Header.Get("Origin") != h.service.cfg.AllowedOrigin ||
+					h.service.cfg.AllowedOrigin == "" {
+					h.respondError(w, http.StatusForbidden, "CSRF check failed", nil)
+					return
+				}
+			}
+		} else if h.service.cfg.DevReturnOTP {
+			header := strings.TrimSpace(r.Header.Get("Authorization"))
+			if strings.HasPrefix(header, "Bearer ") {
+				token = strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+			}
+		}
+		if token == "" {
 			h.respondError(
 				w,
 				http.StatusUnauthorized,
@@ -232,10 +294,7 @@ func (h *Handler) Middleware(next http.Handler) http.Handler {
 		}
 		user, err := h.service.Authenticate(
 			r.Context(),
-			strings.TrimSpace(strings.TrimPrefix(
-				header,
-				"Bearer ",
-			)),
+			token,
 		)
 		if err != nil {
 			h.respondServiceError(
@@ -271,6 +330,43 @@ func (h *Handler) AdminOnly(next http.Handler) http.Handler {
 			w,
 			r,
 		)
+	})
+}
+
+func (h *Handler) Workspace(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		actor, ok := UserFromContext(r.Context())
+		if !ok {
+			h.respondServiceError(w, ErrForbidden)
+			return
+		}
+		ownerID := strings.TrimSpace(r.Header.Get("X-TraffoFlex-Act-As"))
+		if ownerID == "" {
+			ownerID = actor.ID
+		} else if ownerID != actor.ID {
+			if actor.Role != RoleAdmin {
+				h.respondServiceError(w, ErrForbidden)
+				return
+			}
+			owner, err := h.service.repo.GetUser(r.Context(), ownerID)
+			if err != nil || !owner.Approved {
+				h.respondServiceError(w, ErrNotFound)
+				return
+			}
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				h.log.Info(
+					"admin acting on user data",
+					"actor_id", actor.ID,
+					"owner_id", ownerID,
+					"method", r.Method,
+					"path", r.URL.Path,
+				)
+			}
+		}
+		next.ServeHTTP(w, r.WithContext(scope.WithValue(
+			r.Context(),
+			scope.Value{ActorID: actor.ID, OwnerID: ownerID},
+		)))
 	})
 }
 
@@ -348,6 +444,16 @@ func (h *Handler) respondServiceError(
 			w,
 			http.StatusTooManyRequests,
 			"otp request rate limited",
+			err,
+		)
+	case errors.Is(
+		err,
+		ErrOTPAttempts,
+	):
+		h.respondError(
+			w,
+			http.StatusTooManyRequests,
+			"too many invalid otp attempts; request a new code after expiry",
 			err,
 		)
 	case errors.Is(

@@ -3,6 +3,7 @@ package integrations
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -15,11 +16,20 @@ type Client interface {
 	TriggerDestinationHealthcheck(
 		ctx context.Context,
 		destinationID string,
-	) error
+	) (HealthcheckResult, error)
 	TestPostback(
 		ctx context.Context,
 		payload []byte,
 	) error
+}
+
+type HealthcheckResult struct {
+	DestinationID        string `json:"destination_id"`
+	Status               string `json:"status"`
+	Error                string `json:"error,omitempty"`
+	ProbeStatusCode      int    `json:"probe_status_code,omitempty"`
+	ConsecutiveFailures  int    `json:"consecutive_failures"`
+	ConsecutiveSuccesses int    `json:"consecutive_successes"`
 }
 
 type NoopClient struct{}
@@ -31,14 +41,14 @@ func (NoopClient) ReloadTrafficCache(ctx context.Context) error {
 func (NoopClient) TriggerDestinationHealthcheck(
 	ctx context.Context,
 	destinationID string,
-) error {
+) (HealthcheckResult, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return HealthcheckResult{}, err
 	}
 	if strings.TrimSpace(destinationID) == "" {
-		return errors.New("destination id is required")
+		return HealthcheckResult{}, errors.New("destination id is required")
 	}
-	return nil
+	return HealthcheckResult{DestinationID: destinationID, Status: "unknown"}, nil
 }
 
 func (NoopClient) TestPostback(
@@ -110,16 +120,32 @@ func (c *HTTPClient) ReloadTrafficCache(ctx context.Context) error {
 func (c *HTTPClient) TriggerDestinationHealthcheck(
 	ctx context.Context,
 	destinationID string,
-) error {
+) (result HealthcheckResult, resultErr error) {
 	destinationID = strings.TrimSpace(destinationID)
 	if destinationID == "" {
-		return errors.New("destination id is required")
+		return HealthcheckResult{}, errors.New("destination id is required")
 	}
-	return c.post(
+	request, err := http.NewRequestWithContext(
 		ctx,
+		http.MethodPost,
 		c.trafficServiceURL+"/internal/destinations/"+destinationID+"/healthcheck",
-		nil,
+		http.NoBody,
 	)
+	if err != nil {
+		return HealthcheckResult{}, err
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return HealthcheckResult{}, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, response.Body.Close()) }()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return HealthcheckResult{}, errors.New("traffic-service healthcheck failed")
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&result); err != nil {
+		return HealthcheckResult{}, err
+	}
+	return result, nil
 }
 
 func (c *HTTPClient) TestPostback(

@@ -147,6 +147,7 @@ type TrafficbackReason string
 
 const (
 	TrafficbackNoMatchingStream     TrafficbackReason = "no_matching_stream"
+	TrafficbackNoDestination        TrafficbackReason = "no_destination_available"
 	TrafficbackDestinationDisabled  TrafficbackReason = "destination_disabled"
 	TrafficbackDestinationUnhealthy TrafficbackReason = "destination_unhealthy"
 	TrafficbackOfferCapReached      TrafficbackReason = "offer_cap_reached"
@@ -172,6 +173,7 @@ type TrafficbackConfig struct {
 
 type Campaign struct {
 	ID                string            `json:"id"`
+	OwnerID           string            `json:"owner_id,omitempty"`
 	PublicID          string            `json:"public_id,omitempty"`
 	PublicToken       string            `json:"public_token,omitempty"`
 	TeamID            string            `json:"team_id"`
@@ -190,6 +192,7 @@ type Campaign struct {
 
 type Stream struct {
 	ID                string            `json:"id"`
+	OwnerID           string            `json:"owner_id,omitempty"`
 	CampaignID        string            `json:"campaign_id"`
 	Name              string            `json:"name"`
 	Priority          int               `json:"priority"`
@@ -295,9 +298,11 @@ type DestinationCapRule struct {
 
 type Destination struct {
 	ID                string              `json:"id"`
+	OwnerID           string              `json:"owner_id,omitempty"`
 	Name              string              `json:"name"`
 	Type              DestinationType     `json:"type"`
 	URL               string              `json:"url"`
+	HealthcheckURL    string              `json:"healthcheck_url,omitempty"`
 	ManualStatus      Status              `json:"manual_status"`
 	HealthStatus      HealthStatus        `json:"health_status"`
 	Redirect          RedirectConfig      `json:"redirect"`
@@ -413,6 +418,7 @@ func hasWeekday(
 
 type TrafficSource struct {
 	ID        string    `json:"id"`
+	OwnerID   string    `json:"owner_id,omitempty"`
 	TeamID    string    `json:"team_id"`
 	Name      string    `json:"name"`
 	Slug      string    `json:"slug"`
@@ -422,6 +428,7 @@ type TrafficSource struct {
 
 type AffiliateNetwork struct {
 	ID        string    `json:"id"`
+	OwnerID   string    `json:"owner_id,omitempty"`
 	TeamID    string    `json:"team_id"`
 	Name      string    `json:"name"`
 	Slug      string    `json:"slug"`
@@ -431,6 +438,7 @@ type AffiliateNetwork struct {
 
 type PostbackTemplate struct {
 	ID        string            `json:"id"`
+	OwnerID   string            `json:"owner_id,omitempty"`
 	TeamID    string            `json:"team_id"`
 	NetworkID string            `json:"network_id"`
 	Name      string            `json:"name"`

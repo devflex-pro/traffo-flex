@@ -25,6 +25,11 @@ type Config struct {
 	Logger       *slog.Logger
 }
 
+type JSONEvent struct {
+	Key   string
+	Value any
+}
+
 type Producer struct {
 	writer       writer
 	log          *slog.Logger
@@ -152,22 +157,41 @@ func (p *Producer) WriteJSON(
 	key string,
 	value any,
 ) error {
+	return p.WriteJSONBatch(
+		ctx,
+		topic,
+		[]JSONEvent{{Key: key, Value: value}},
+	)
+}
+
+func (p *Producer) WriteJSONBatch(
+	ctx context.Context,
+	topic string,
+	events []JSONEvent,
+) error {
+	if len(events) == 0 {
+		return nil
+	}
 	p.stats.writeCalls.Add(1)
 	if err := ctx.Err(); err != nil {
 		p.recordContextCancel(err)
 		return err
 	}
-	payload, err := json.Marshal(value)
-	if err != nil {
-		p.recordMarshalFailure(err)
-		return err
-	}
-	payloadBytes := len(payload)
-	message := kafka.Message{
-		Topic: topic,
-		Key:   []byte(key),
-		Value: payload,
-		Time:  time.Now().UTC(),
+	messages := make([]kafka.Message, 0, len(events))
+	payloadBytes := 0
+	for _, event := range events {
+		payload, err := json.Marshal(event.Value)
+		if err != nil {
+			p.recordMarshalFailure(err)
+			return err
+		}
+		payloadBytes += len(payload)
+		messages = append(messages, kafka.Message{
+			Topic: topic,
+			Key:   []byte(event.Key),
+			Value: payload,
+			Time:  time.Now().UTC(),
+		})
 	}
 	var lastErr error
 	for attempt := 1; attempt <= p.maxAttempts; attempt++ {
@@ -177,9 +201,9 @@ func (p *Producer) WriteJSON(
 			p.writeTimeout,
 		)
 		p.stats.writeAttempts.Add(1)
-		err = p.writer.WriteMessages(
+		err := p.writer.WriteMessages(
 			writeCtx,
-			message,
+			messages...,
 		)
 		cancel()
 		if err == nil {
@@ -194,8 +218,8 @@ func (p *Producer) WriteJSON(
 				p.clientID,
 				"topic",
 				topic,
-				"key",
-				key,
+				"event_count",
+				len(events),
 				"attempt",
 				attempt,
 				"payload_bytes",
@@ -212,6 +236,16 @@ func (p *Producer) WriteJSON(
 			return nil
 		}
 		lastErr = err
+		var writeErrors kafka.WriteErrors
+		if errors.As(err, &writeErrors) && len(writeErrors) == len(messages) {
+			failedMessages := make([]kafka.Message, 0, writeErrors.Count())
+			for index, writeErr := range writeErrors {
+				if writeErr != nil {
+					failedMessages = append(failedMessages, messages[index])
+				}
+			}
+			messages = failedMessages
+		}
 		if attempt == p.maxAttempts {
 			p.recordFailure(
 				err,
@@ -224,8 +258,8 @@ func (p *Producer) WriteJSON(
 				p.clientID,
 				"topic",
 				topic,
-				"key",
-				key,
+				"event_count",
+				len(events),
 				"attempt",
 				attempt,
 				"max_attempts",
@@ -252,8 +286,8 @@ func (p *Producer) WriteJSON(
 			p.clientID,
 			"topic",
 			topic,
-			"key",
-			key,
+			"event_count",
+			len(events),
 			"attempt",
 			attempt,
 			"next_attempt",

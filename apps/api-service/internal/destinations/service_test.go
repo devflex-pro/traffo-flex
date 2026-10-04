@@ -26,13 +26,26 @@ func TestServiceCreateValidatesInput(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsMacroHealthcheckURL(t *testing.T) {
+	service := NewService(NewMemoryRepository())
+	_, err := service.Create(context.Background(), DestinationRequest{
+		Name:           "Destination",
+		URL:            "https://example.com/offer?click_id={click_id}",
+		HealthcheckURL: "https://example.com/health?click_id={click_id}",
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected invalid healthcheck URL, got %v", err)
+	}
+}
+
 func TestServiceCRUD(t *testing.T) {
 	service := NewService(NewMemoryRepository())
 	ctx := context.Background()
 
 	created, err := service.Create(ctx, DestinationRequest{
-		Name: "Destination One",
-		URL:  "https://example.com/?subid={click_id}",
+		Name:           "Destination One",
+		URL:            "https://example.com/?subid={click_id}",
+		HealthcheckURL: "https://example.com/health",
 	})
 	if err != nil {
 		t.Fatalf(
@@ -55,6 +68,9 @@ func TestServiceCRUD(t *testing.T) {
 			created.HealthStatus,
 		)
 	}
+	if created.HealthcheckURL != "https://example.com/health" {
+		t.Fatalf("HealthcheckURL = %q", created.HealthcheckURL)
+	}
 
 	got, err := service.Get(
 		ctx,
@@ -74,11 +90,12 @@ func TestServiceCRUD(t *testing.T) {
 	}
 
 	updated, err := service.Update(ctx, created.ID, DestinationRequest{
-		Name:         "Destination Updated",
-		URL:          "https://example.org/?subid={click_id}",
-		ManualStatus: models.StatusPaused,
-		HealthStatus: models.HealthHealthy,
-		Redirect:     models.RedirectConfig{Mode: models.RedirectHTTP302},
+		Name:           "Destination Updated",
+		URL:            "https://example.org/?subid={click_id}",
+		HealthcheckURL: "https://example.org/health",
+		ManualStatus:   models.StatusPaused,
+		HealthStatus:   models.HealthHealthy,
+		Redirect:       models.RedirectConfig{Mode: models.RedirectHTTP302},
 	})
 	if err != nil {
 		t.Fatalf(
@@ -91,6 +108,9 @@ func TestServiceCRUD(t *testing.T) {
 			"ManualStatus = %q, want paused",
 			updated.ManualStatus,
 		)
+	}
+	if updated.HealthcheckURL != "https://example.org/health" {
+		t.Fatalf("updated HealthcheckURL = %q", updated.HealthcheckURL)
 	}
 
 	if err := service.Delete(

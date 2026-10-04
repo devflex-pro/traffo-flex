@@ -14,6 +14,7 @@ type Builder struct {
 }
 
 type Input struct {
+	OwnerID       string
 	ClickID       string
 	CampaignID    string
 	StreamID      string
@@ -58,6 +59,7 @@ func (b *Builder) Build(
 
 	return models.RequestContext{
 		ClickID:       input.ClickID,
+		OwnerID:       input.OwnerID,
 		CampaignID:    input.CampaignID,
 		StreamID:      input.StreamID,
 		DestinationID: input.DestinationID,
@@ -188,6 +190,7 @@ func ClickEvent(
 ) models.ClickEvent {
 	return models.ClickEvent{
 		ClickID:       ctx.ClickID,
+		OwnerID:       ctx.OwnerID,
 		CampaignID:    ctx.CampaignID,
 		StreamID:      ctx.StreamID,
 		DestinationID: ctx.DestinationID,

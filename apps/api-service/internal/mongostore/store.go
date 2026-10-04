@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/devflex/traffoflex/apps/api-service/internal/scope"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -34,7 +35,7 @@ func (s *Store[T]) List(ctx context.Context) (
 ) {
 	return s.list(
 		ctx,
-		bson.M{},
+		ownerFilter(ctx, bson.M{}),
 	)
 }
 
@@ -48,7 +49,7 @@ func (s *Store[T]) ListByField(
 ) {
 	return s.list(
 		ctx,
-		bson.M{field: value},
+		ownerFilter(ctx, bson.M{field: value}),
 	)
 }
 
@@ -62,7 +63,7 @@ func (s *Store[T]) Get(
 	var zero T
 	res := s.collection.FindOne(
 		ctx,
-		bson.M{"id": id},
+		ownerFilter(ctx, bson.M{"id": id}),
 	)
 	if err := res.Err(); err != nil {
 		if errors.Is(
@@ -100,6 +101,9 @@ func (s *Store[T]) Create(
 	}
 	doc["_id"] = id
 	doc["id"] = id
+	if ownerID := scope.OwnerID(ctx); ownerID != "" {
+		doc["owner_id"] = ownerID
+	}
 
 	if _, err := s.collection.InsertOne(
 		ctx,
@@ -115,7 +119,7 @@ func (s *Store[T]) Create(
 		var zero T
 		return zero, err
 	}
-	return item, nil
+	return decode[T](doc)
 }
 
 func (s *Store[T]) Update(
@@ -132,6 +136,9 @@ func (s *Store[T]) Update(
 		return zero, err
 	}
 	doc["id"] = id
+	if ownerID := scope.OwnerID(ctx); ownerID != "" {
+		doc["owner_id"] = ownerID
+	}
 	delete(
 		doc,
 		"_id",
@@ -139,7 +146,7 @@ func (s *Store[T]) Update(
 
 	res, err := s.collection.UpdateOne(
 		ctx,
-		bson.M{"id": id},
+		ownerFilter(ctx, bson.M{"id": id}),
 		bson.M{"$set": doc},
 	)
 	if err != nil {
@@ -150,7 +157,7 @@ func (s *Store[T]) Update(
 		var zero T
 		return zero, s.notFoundErr
 	}
-	return item, nil
+	return decode[T](doc)
 }
 
 func (s *Store[T]) Delete(
@@ -159,7 +166,7 @@ func (s *Store[T]) Delete(
 ) error {
 	res, err := s.collection.DeleteOne(
 		ctx,
-		bson.M{"id": id},
+		ownerFilter(ctx, bson.M{"id": id}),
 	)
 	if err != nil {
 		return err
@@ -168,6 +175,13 @@ func (s *Store[T]) Delete(
 		return s.notFoundErr
 	}
 	return nil
+}
+
+func ownerFilter(ctx context.Context, filter bson.M) bson.M {
+	if ownerID := scope.OwnerID(ctx); ownerID != "" {
+		filter["owner_id"] = ownerID
+	}
+	return filter
 }
 
 func (s *Store[T]) list(

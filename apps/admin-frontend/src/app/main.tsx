@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import {
   QueryClient,
@@ -28,6 +28,7 @@ import {
   Campaign,
   CampaignRequest,
   Destination,
+  DestinationHealthcheckResult,
   DestinationCaps,
   DestinationRequest,
   DestinationSchedule,
@@ -44,11 +45,20 @@ import {
   api,
   ApiRequestError,
   AuthUser,
-  setAuthToken
+  setActingAsUserID
 } from "./api";
 import "./styles.css";
 
 const queryClient = new QueryClient();
+const RoutingSyncContext = React.createContext<((afterSave?: boolean) => Promise<void>) | null>(null);
+
+function useRoutingSync() {
+  const sync = useContext(RoutingSyncContext);
+  if (!sync) {
+    throw new Error("Routing sync is unavailable");
+  }
+  return sync;
+}
 const statusOptions: Status[] = ["active", "paused", "archived"];
 const distributionOptions: DistributionMode[] = [
   "direct",
@@ -203,38 +213,57 @@ function reportDateRange(
 }
 
 function App() {
-  const [token, setToken] = useState(() => localStorage.getItem("tf_token"));
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [logoutError, setLogoutError] = useState("");
+  const [actingAs, setActingAs] = useState<AuthUser | null>(null);
 
-  useEffect(
-    () => {
-      setAuthToken(token);
-    },
-    [token]
-  );
-
-  function onLogin(nextToken: string) {
-    localStorage.setItem(
-      "tf_token",
-      nextToken
+  useEffect(() => {
+    let active = true;
+    api.me().then(
+      () => { if (active) setAuthenticated(true); },
+      () => { if (active) setAuthenticated(false); }
     );
-    setToken(nextToken);
+    return () => { active = false; };
+  }, []);
+
+  function onLogin() {
+    setLogoutError("");
+    setAuthenticated(true);
   }
 
-  function onLogout() {
-    localStorage.removeItem("tf_token");
-    setToken(null);
+  async function onLogout() {
+    try {
+      await api.logout();
+      setActingAsUserID(null);
+      setActingAs(null);
+      queryClient.clear();
+      setAuthenticated(false);
+      setLogoutError("");
+    } catch {
+      setLogoutError("Logout failed. Please retry.");
+    }
+  }
+
+  async function onActAs(user: AuthUser | null) {
+    await queryClient.cancelQueries();
+    setActingAsUserID(user?.id ?? null);
+    setActingAs(user);
+    queryClient.clear();
   }
 
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
+        {logoutError ? <p role="alert" className="bg-red-50 p-2 text-red-700">{logoutError}</p> : null}
         <Routes>
           <Route path="/login" element={<LoginPage onLogin={onLogin} />} />
           <Route
             path="/*"
             element={
-              token ? (
-                <Layout onLogout={onLogout} />
+              authenticated === null ? (
+                <p>Loading session…</p>
+              ) : authenticated ? (
+                <Layout onLogout={onLogout} actingAs={actingAs} onActAs={onActAs} />
               ) : (
                 <Navigate to="/login" replace />
               )
@@ -246,7 +275,7 @@ function App() {
   );
 }
 
-function LoginPage({ onLogin }: { onLogin: (token: string) => void }) {
+function LoginPage({ onLogin }: { onLogin: () => void }) {
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [devOTP, setDevOTP] = useState("");
@@ -281,8 +310,8 @@ function LoginPage({ onLogin }: { onLogin: (token: string) => void }) {
         values.email,
         values.otp
       ),
-    onSuccess: (data) => {
-      onLogin(data.token);
+    onSuccess: () => {
+      onLogin();
       navigate("/");
     },
     onError: (error) => {
@@ -352,17 +381,54 @@ function LoginPage({ onLogin }: { onLogin: (token: string) => void }) {
   );
 }
 
-function Layout({ onLogout }: { onLogout: () => void }) {
+function Layout({ onLogout, actingAs, onActAs }: {
+  onLogout: () => void;
+  actingAs: AuthUser | null;
+  onActAs: (user: AuthUser | null) => Promise<void>;
+}) {
+  const [routingStatus, setRoutingStatus] = useState<"idle" | "pending" | "success" | "error">("idle");
+  const [routingMessage, setRoutingMessage] = useState("");
+  const [routingPending, setRoutingPending] = useState(0);
+  const latestRoutingRequest = useRef(0);
   const me = useQuery({
     queryKey: ["me"],
     queryFn: api.me
   });
+
+  const syncRouting = async (afterSave = false) => {
+    const requestID = ++latestRoutingRequest.current;
+    setRoutingPending((current) => current + 1);
+    setRoutingStatus("pending");
+    setRoutingMessage("Refreshing routing snapshot…");
+    try {
+      await api.reloadTrafficCache();
+      if (requestID === latestRoutingRequest.current) {
+        setRoutingStatus("success");
+        setRoutingMessage("Routing snapshot refreshed.");
+      }
+    } catch (error) {
+      if (requestID === latestRoutingRequest.current) {
+        setRoutingStatus("error");
+        setRoutingMessage(`${afterSave ? "Change saved in MongoDB, but routing refresh failed." : "Routing refresh failed."} Retry here. ${error instanceof Error ? error.message : ""}`);
+      }
+    } finally {
+      setRoutingPending((current) => current - 1);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-zinc-100 text-zinc-950">
       <aside className="fixed left-0 top-0 h-full w-64 border-r border-zinc-200 bg-white p-5">
         <div className="text-xl font-semibold">TraffoFlex</div>
         <div className="mt-2 text-xs text-zinc-500">{me.data?.email}</div>
+        {actingAs ? (
+          <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+            Working as {actingAs.email}
+            <button className="mt-2 block underline" onClick={() => void onActAs(null)} type="button">
+              Return to my data
+            </button>
+          </div>
+        ) : null}
         <nav className="mt-8 flex flex-col gap-1 text-sm">
           <NavLink to="/">Dashboard</NavLink>
           <NavLink to="/campaigns">Campaigns</NavLink>
@@ -370,7 +436,7 @@ function Layout({ onLogout }: { onLogout: () => void }) {
           <NavLink to="/postbacks">Postbacks</NavLink>
           <NavLink to="/health-history">Health History</NavLink>
           <NavLink to="/reports">Reports</NavLink>
-          <NavLink to="/ingestion">Ingestion</NavLink>
+          {me.data?.role === "admin" ? <NavLink to="/ingestion">Ingestion</NavLink> : null}
           {me.data?.role === "admin" ? <NavLink to="/users">Users</NavLink> : null}
         </nav>
         <button className="button-secondary mt-8 w-full" onClick={onLogout} type="button">
@@ -378,16 +444,31 @@ function Layout({ onLogout }: { onLogout: () => void }) {
         </button>
       </aside>
       <main className="ml-64 p-6">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/campaigns" element={<CampaignsPage />} />
-          <Route path="/destinations" element={<DestinationsPage />} />
-          <Route path="/postbacks" element={<PostbacksPage />} />
-          <Route path="/health-history" element={<HealthHistoryPage />} />
-          <Route path="/reports" element={<ReportsPage />} />
-          <Route path="/ingestion" element={<IngestionPage />} />
-          <Route path="/users" element={<UsersPage />} />
-        </Routes>
+        <div className="mb-5 flex items-center justify-end gap-3">
+          <span aria-live="polite" className={`text-sm ${routingStatus === "error" ? "text-red-700" : "text-zinc-600"}`}>
+            {routingMessage}
+          </span>
+          <button
+            className="button-secondary"
+            disabled={routingPending > 0}
+            onClick={() => void syncRouting()}
+            type="button"
+          >
+            {routingPending > 0 ? "Refreshing…" : "Refresh routing snapshot"}
+          </button>
+        </div>
+        <RoutingSyncContext.Provider value={syncRouting}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/campaigns" element={<CampaignsPage />} />
+            <Route path="/destinations" element={<DestinationsPage />} />
+            <Route path="/postbacks" element={<PostbacksPage />} />
+            <Route path="/health-history" element={<HealthHistoryPage />} />
+            <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/ingestion" element={<IngestionPage />} />
+            <Route path="/users" element={<UsersPage onActAs={onActAs} />} />
+          </Routes>
+        </RoutingSyncContext.Provider>
       </main>
     </div>
   );
@@ -430,8 +511,9 @@ function Dashboard() {
   );
 }
 
-function UsersPage() {
+function UsersPage({ onActAs }: { onActAs: (user: AuthUser) => Promise<void> }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const users = useQuery({
     queryKey: ["users"],
     queryFn: () => api.users()
@@ -453,7 +535,11 @@ function UsersPage() {
         header: "Actions",
         cell: ({ row }) =>
           row.original.approved ? (
-            <span className="text-sm text-zinc-500">Approved</span>
+            <button className="link-button" onClick={() => {
+              void onActAs(row.original).then(() => navigate("/"));
+            }} type="button">
+              Open workspace
+            </button>
           ) : (
             <button className="link-button" onClick={() => approve.mutate(row.original.id)} type="button">
               Approve
@@ -474,6 +560,7 @@ function UsersPage() {
 
 function CampaignsPage() {
   const queryClient = useQueryClient();
+  const syncRouting = useRoutingSync();
   const [selectedID, setSelectedID] = useState<string | null>(null);
   const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
   const [campaignFormOpen, setCampaignFormOpen] = useState(false);
@@ -517,6 +604,7 @@ function CampaignsPage() {
     onSuccess: () => {
       setCampaignFormOpen(false);
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void syncRouting(true);
     }
   });
   const updateCampaign = useMutation({
@@ -529,11 +617,15 @@ function CampaignsPage() {
       setEditingCampaign(null);
       setCampaignFormOpen(false);
       queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void syncRouting(true);
     }
   });
   const deleteCampaign = useMutation({
     mutationFn: api.deleteCampaign,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["campaigns"] })
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["campaigns"] });
+      void syncRouting(true);
+    }
   });
 
   return (
@@ -599,6 +691,7 @@ function CampaignForm({
   onSubmit: (data: CampaignRequest) => void;
   submitLabel: string;
 }) {
+  const [formError, setFormError] = useState("");
   const form = useForm<CampaignRequest>({
     defaultValues: {
       name: initial?.name ?? "",
@@ -606,22 +699,54 @@ function CampaignForm({
       status: initial?.status ?? "active",
       traffic_source_id: initial?.traffic_source_id ?? "",
       currency: initial?.currency ?? "USD",
-      default_action: initial?.default_action ?? ""
+      default_action: initial?.default_action ?? "",
+      trafficback_config: {
+        enabled: initial?.trafficback_config?.enabled ?? false,
+        url: initial?.trafficback_config?.url ?? "",
+        max_depth: initial?.trafficback_config?.max_depth || 3
+      }
     }
   });
+  const trafficbackEnabled = form.watch("trafficback_config.enabled");
   return (
     <form
       className="space-y-3"
       onSubmit={form.handleSubmit((values) => {
-        campaignSchema.parse(values);
-        onSubmit(values);
-        form.reset();
+        const payload = values.trafficback_config.enabled ? values : {
+          ...values,
+          trafficback_config: { enabled: false, url: "", max_depth: 0 }
+        };
+        const parsed = campaignSchema.safeParse(payload);
+        if (!parsed.success) {
+          setFormError(parsed.error.issues[0]?.message ?? "Invalid campaign");
+          return;
+        }
+        setFormError("");
+        onSubmit(payload);
       })}
     >
+      {formError ? <p className="text-sm text-red-700">{formError}</p> : null}
       <TextField label="Name" register={form.register("name")} />
       <TextField label="Slug" register={form.register("slug")} />
       <TextField label="Currency" register={form.register("currency")} />
       <SelectField label="Status" options={statusOptions} register={form.register("status")} />
+      <label className="flex items-center gap-2 text-sm font-medium">
+        <input type="checkbox" {...form.register("trafficback_config.enabled")} />
+        Send traffic to trafficback when no destination is available
+      </label>
+      {trafficbackEnabled ? (
+        <div className="space-y-3">
+          <TextField label="Trafficback URL" register={form.register("trafficback_config.url")} />
+          <TextField
+            label="Maximum trafficback depth"
+            register={form.register("trafficback_config.max_depth", { valueAsNumber: true })}
+            type="number"
+          />
+          <p className="text-xs text-zinc-500">
+            Add trafficback_depth={"{trafficback_depth}"} to the URL if it can return to this campaign.
+          </p>
+        </div>
+      ) : null}
       <button className="button-primary" type="submit">
         {submitLabel}
       </button>
@@ -631,6 +756,7 @@ function CampaignForm({
 
 function StreamsManager({ campaign }: { campaign: Campaign }) {
   const queryClient = useQueryClient();
+  const syncRouting = useRoutingSync();
   const [editingStream, setEditingStream] = useState<Stream | null>(null);
   const [streamFormOpen, setStreamFormOpen] = useState(false);
   const streams = useQuery({
@@ -658,6 +784,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
           campaign.id
         ]
       });
+      void syncRouting(true);
     }
   });
   const updateStream = useMutation({
@@ -675,6 +802,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
           campaign.id
         ]
       });
+      void syncRouting(true);
     }
   });
   const deleteStream = useMutation({
@@ -688,6 +816,7 @@ function StreamsManager({ campaign }: { campaign: Campaign }) {
           campaign.id
         ]
       });
+      void syncRouting(true);
     }
   });
   const columns = useMemo<ColumnDef<Stream>[]>(
@@ -1092,8 +1221,10 @@ function StreamForm({
 
 function DestinationsPage() {
   const queryClient = useQueryClient();
+  const syncRouting = useRoutingSync();
   const [editingDestination, setEditingDestination] = useState<Destination | null>(null);
   const [destinationFormOpen, setDestinationFormOpen] = useState(false);
+  const [healthcheckResult, setHealthcheckResult] = useState<DestinationHealthcheckResult | null>(null);
   const destinations = useQuery({
     queryKey: ["destinations"],
     queryFn: () => api.destinations()
@@ -1103,6 +1234,7 @@ function DestinationsPage() {
     onSuccess: () => {
       setDestinationFormOpen(false);
       queryClient.invalidateQueries({ queryKey: ["destinations"] });
+      void syncRouting(true);
     }
   });
   const updateDestination = useMutation({
@@ -1115,14 +1247,20 @@ function DestinationsPage() {
       setEditingDestination(null);
       setDestinationFormOpen(false);
       queryClient.invalidateQueries({ queryKey: ["destinations"] });
+      void syncRouting(true);
     }
   });
   const deleteDestination = useMutation({
     mutationFn: api.deleteDestination,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["destinations"] })
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["destinations"] });
+      void syncRouting(true);
+    }
   });
   const triggerHealthcheck = useMutation({
-    mutationFn: api.triggerDestinationHealthcheck
+    mutationFn: api.triggerDestinationHealthcheck,
+    onMutate: () => setHealthcheckResult(null),
+    onSuccess: (result) => setHealthcheckResult(result)
   });
   const columns = useMemo<ColumnDef<Destination>[]>(
     () => [
@@ -1162,6 +1300,17 @@ function DestinationsPage() {
 
   return (
     <Page title="Destinations">
+      {healthcheckResult ? (
+        <p className="mb-4 text-sm" aria-live="polite">
+          Probe {healthcheckResult.destination_id}: {healthcheckResult.status}
+          {healthcheckResult.probe_status_code ? ` (HTTP ${healthcheckResult.probe_status_code})` : ""}
+          {healthcheckResult.error ? ` — ${healthcheckResult.error}` : ""}.
+          Failures: {healthcheckResult.consecutive_failures}; successes: {healthcheckResult.consecutive_successes}.
+        </p>
+      ) : null}
+      {triggerHealthcheck.isError ? (
+        <p className="mb-4 text-sm text-red-700" aria-live="polite">Probe failed: {triggerHealthcheck.error.message}</p>
+      ) : null}
       <Panel title="Destination list">
         <div className="mb-4 flex justify-end">
           <button
@@ -1223,6 +1372,7 @@ function DestinationForm({
       name: initial?.name ?? "",
       type: initial?.type ?? "url",
       url: initial?.url ?? "",
+      healthcheck_url: initial?.healthcheck_url ?? "",
       manual_status: initial?.manual_status ?? "active",
       health_status: initial?.health_status ?? "unknown",
       redirect: { mode: initial?.redirect.mode ?? "http_302" },
@@ -1236,6 +1386,7 @@ function DestinationForm({
         name: initial?.name ?? "",
         type: initial?.type ?? "url",
         url: initial?.url ?? "",
+        healthcheck_url: initial?.healthcheck_url ?? "",
         manual_status: initial?.manual_status ?? "active",
         health_status: initial?.health_status ?? "unknown",
         redirect: { mode: initial?.redirect.mode ?? "http_302" },
@@ -1274,6 +1425,7 @@ function DestinationForm({
       {formError ? <p className="text-sm text-red-700">{formError}</p> : null}
       <TextField label="Name" register={form.register("name")} />
       <TextField label="URL" register={form.register("url")} />
+      <TextField label="Healthcheck URL (optional, required for macro URLs or GET checks)" register={form.register("healthcheck_url")} />
       <SelectField label="Manual status" options={statusOptions} register={form.register("manual_status")} />
       <SelectField label="Health status" options={["healthy", "degraded", "unhealthy", "unknown"]} register={form.register("health_status")} />
       <SelectField label="Redirect" options={["http_302", "meta_refresh", "javascript", "interstitial"]} register={form.register("redirect.mode")} />
@@ -2598,7 +2750,18 @@ const campaignSchema = z.object({
     "paused",
     "archived"
   ]),
-  currency: z.string().regex(/^[A-Z]{3}$/)
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  trafficback_config: z.object({
+    enabled: z.boolean(),
+    url: z.string(),
+    max_depth: z.number()
+  }).refine(
+    (config) => !config.enabled || /^https?:\/\/[^\s/?#@]+(?:[/?#]|$)/i.test(config.url.trim()),
+    "Trafficback URL must be an absolute HTTP or HTTPS URL"
+  ).refine(
+    (config) => !config.enabled || (Number.isInteger(config.max_depth) && config.max_depth >= 1 && config.max_depth <= 10),
+    "Maximum trafficback depth must be between 1 and 10"
+  )
 });
 
 const streamSchema = z.object({
@@ -2672,6 +2835,10 @@ const destinationSchema = z.object({
   name: z.string().min(1),
   type: z.string().min(1),
   url: z.string().url(),
+  healthcheck_url: z.string().optional().refine(
+    (value) => !value || (/^https?:\/\//i.test(value) && !/[{}]/.test(value)),
+    "Healthcheck URL must use HTTP(S) and contain no macros"
+  ),
   manual_status: z.enum([
     "active",
     "paused",

@@ -12,11 +12,24 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/devflex/traffoflex/apps/api-service/internal/scope"
 )
 
 const (
-	clickEventsTable             = "click_events"
-	conversionEventsTable        = "conversion_events"
+	clickEventsTable       = "click_events"
+	clickStatsMinuteTable  = "click_stats_1m"
+	clickStatsHourTable    = "click_stats_1h"
+	conversionEventsTable  = "conversion_events"
+	conversionReportSource = `(SELECT c.created_at AS created_at, c.payout AS payout, c.owner_id AS owner_id,
+  k.campaign_id AS campaign_id, k.stream_id AS stream_id,
+  k.destination_id AS destination_id, k.source_id AS source_id
+FROM (SELECT owner_id, conversion_id, any(created_at) AS created_at,
+  any(payout) AS payout FROM conversion_events GROUP BY owner_id, conversion_id) AS c
+LEFT ANY JOIN (SELECT owner_id, conversion_id, any(campaign_id) AS campaign_id,
+  any(stream_id) AS stream_id, any(destination_id) AS destination_id,
+  any(source_id) AS source_id FROM attributed_conversion_events GROUP BY owner_id, conversion_id) AS k
+ON c.owner_id = k.owner_id AND c.conversion_id = k.conversion_id)`
 	trafficbackEventsTable       = "trafficback_events"
 	destinationHealthEventsTable = "destination_health_events"
 	kafkaIngestionErrorsTable    = "kafka_ingestion_errors"
@@ -65,6 +78,7 @@ func (r *ClickHouseRepository) Overview(
 	Metrics,
 	error,
 ) {
+	query.OwnerID = scope.OwnerID(ctx)
 	rows, err := r.queryMetrics(
 		ctx,
 		buildOverviewSQL(query),
@@ -86,6 +100,7 @@ func (r *ClickHouseRepository) Grouped(
 	GroupedReport,
 	error,
 ) {
+	query.OwnerID = scope.OwnerID(ctx)
 	rows, err := r.queryMetrics(
 		ctx,
 		buildGroupedSQL(
@@ -139,6 +154,7 @@ func (r *ClickHouseRepository) Daily(
 	GroupedReport,
 	error,
 ) {
+	query.OwnerID = scope.OwnerID(ctx)
 	rows, err := r.queryMetrics(
 		ctx,
 		buildDailySQL(query),
@@ -493,8 +509,9 @@ func decodeIngestionErrorRows(body []byte) (
 }
 
 func buildOverviewSQL(query Query) string {
+	clickTable, clickCount := clickReportSource(query, false)
 	clickWhere := buildWhereClause(
-		clickEventsTable,
+		clickTable,
 		query,
 	)
 	conversionWhere := buildWhereClause(
@@ -506,7 +523,7 @@ func buildOverviewSQL(query Query) string {
 FROM (
 	SELECT sum(clicks) AS clicks, sum(conversions) AS conversions, sum(revenue) AS revenue, sum(cost) AS cost
 	FROM (
-		SELECT count() AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
+		SELECT %s AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
 		FROM %s
 		%s
 		UNION ALL
@@ -516,9 +533,10 @@ FROM (
 	)
 )
 FORMAT JSONEachRow`,
-		clickEventsTable,
+		clickCount,
+		clickTable,
 		clickWhere,
-		conversionEventsTable,
+		conversionReportSource,
 		conversionWhere,
 	)
 }
@@ -542,8 +560,9 @@ func buildGroupedSQL(
 		)
 	default:
 		column := reportGroupColumn(groupBy)
+		clickTable, clickCount := clickReportSource(query, false)
 		clickWhere := buildWhereClause(
-			clickEventsTable,
+			clickTable,
 			query,
 		)
 		conversionWhere := buildWhereClause(
@@ -555,7 +574,7 @@ func buildGroupedSQL(
 FROM (
 	SELECT id, sum(clicks) AS clicks, sum(conversions) AS conversions, sum(revenue) AS revenue, sum(cost) AS cost
 	FROM (
-		SELECT %s AS id, count() AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
+		SELECT %s AS id, %s AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
 		FROM %s
 		%s
 		GROUP BY id
@@ -572,10 +591,11 @@ ORDER BY clicks DESC, conversions DESC
 LIMIT %d
 FORMAT JSONEachRow`,
 			column,
-			clickEventsTable,
+			clickCount,
+			clickTable,
 			clickWhere,
 			column,
-			conversionEventsTable,
+			conversionReportSource,
 			conversionWhere,
 			defaultReportLimit,
 		)
@@ -583,8 +603,9 @@ FORMAT JSONEachRow`,
 }
 
 func buildDailySQL(query Query) string {
+	clickTable, clickCount := clickReportSource(query, true)
 	clickWhere := buildWhereClause(
-		clickEventsTable,
+		clickTable,
 		query,
 	)
 	conversionWhere := buildWhereClause(
@@ -597,7 +618,7 @@ func buildDailySQL(query Query) string {
 FROM (
 	SELECT id, sum(clicks) AS clicks, sum(conversions) AS conversions, sum(revenue) AS revenue, sum(cost) AS cost
 	FROM (
-		SELECT toString(toDate(toTimeZone(created_at, %s))) AS id, count() AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
+		SELECT toString(toDate(toTimeZone(created_at, %s))) AS id, %s AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
 		FROM %s
 		%s
 		GROUP BY id
@@ -612,12 +633,24 @@ FROM (
 ORDER BY id ASC
 FORMAT JSONEachRow`,
 		timezone,
-		clickEventsTable,
+		clickCount,
+		clickTable,
 		clickWhere,
 		timezone,
-		conversionEventsTable,
+		conversionReportSource,
 		conversionWhere,
 	)
+}
+
+func clickReportSource(
+	query Query,
+	daily bool,
+) (string, string) {
+	if !daily && (query.From.IsZero() || query.From.Minute() == 0) &&
+		(query.To.IsZero() || query.To.Minute() == 59) {
+		return clickStatsHourTable, "sum(clicks)"
+	}
+	return clickStatsMinuteTable, "sum(clicks)"
 }
 
 func buildIngestionErrorsSQL(query IngestionErrorsQuery) string {
@@ -729,16 +762,19 @@ func buildWhereClause(
 		0,
 		6,
 	)
+	if query.OwnerID != "" {
+		conditions = append(conditions, "owner_id = "+quoteString(query.OwnerID))
+	}
 	if !query.From.IsZero() {
 		conditions = append(
 			conditions,
-			"created_at >= "+quoteTime(query.From),
+			"created_at >= "+quoteTime(query.From.UTC().Truncate(time.Minute)),
 		)
 	}
 	if !query.To.IsZero() {
 		conditions = append(
 			conditions,
-			"created_at <= "+quoteTime(query.To),
+			"created_at <= "+quoteTime(query.To.UTC().Truncate(time.Minute).Add(time.Minute-time.Second)),
 		)
 	}
 	if supportsFilter(
@@ -791,7 +827,7 @@ func supportsFilter(
 	field string,
 ) bool {
 	switch table {
-	case clickEventsTable:
+	case clickEventsTable, clickStatsMinuteTable, clickStatsHourTable:
 		return field == "campaign_id" ||
 			field == "stream_id" ||
 			field == "destination_id" ||

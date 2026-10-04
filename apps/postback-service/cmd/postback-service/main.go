@@ -15,6 +15,7 @@ import (
 	apphttp "github.com/devflex/traffoflex/apps/postback-service/internal/http"
 	"github.com/devflex/traffoflex/apps/postback-service/internal/mongodb"
 	"github.com/devflex/traffoflex/apps/postback-service/internal/postbacklogs"
+	"github.com/devflex/traffoflex/apps/postback-service/internal/postbacks"
 	"github.com/devflex/traffoflex/packages/go-shared/eventstream"
 	"github.com/devflex/traffoflex/packages/go-shared/logger"
 )
@@ -102,47 +103,44 @@ func main() {
 		}
 	}()
 
-	var conversionSink conversions.EventSink = conversions.NewKafkaSink(
+	conversionSink := conversions.NewKafkaSink(
 		eventProducer,
 		cfg.ConversionTopic,
 	)
-	var postbackEventLogger postbacklogs.Logger = postbacklogs.NewKafkaLogger(
+	postbackEventLogger := postbacklogs.NewKafkaLogger(
 		eventProducer,
 		cfg.PostbackLogTopic,
 	)
-	if cfg.EventFailurePolicy == "fail_open" {
-		conversionSink = conversions.NewBestEffortEventSink(
-			log,
-			conversionSink,
-		)
-		postbackEventLogger = postbacklogs.NewBestEffortLogger(
-			log,
-			postbackEventLogger,
-		)
-	}
-	var clickLookup conversions.ClickLookup = conversions.NewClickHouseClickLookup(
-		cfg.ClickHouseHTTPURL,
-		cfg.ClickLookupTimeout,
-	)
-	if cfg.ClickLookupPolicy == "fail_open" {
-		clickLookup = conversions.NewBestEffortClickLookup(
-			log,
-			clickLookup,
-		)
-	}
+	postbackLogRepo := postbacklogs.NewMongoLogger(db)
+	go postbacklogs.NewWorker(
+		postbackLogRepo,
+		postbackEventLogger,
+		log,
+		time.Second,
+	).Run(ctx)
+	conversionRepo := conversions.NewMongoRepository(db)
+	go conversions.NewWorker(
+		conversionRepo,
+		conversionSink,
+		log,
+		time.Second,
+	).Run(ctx)
+	go conversions.NewAttributionWorker(
+		conversionRepo,
+		conversions.NewClickHouseAttributionLookup(cfg.ClickHouseHTTPURL),
+		conversions.NewKafkaAttributionSink(eventProducer, cfg.AttributionTopic),
+		log,
+		time.Second,
+	).Run(ctx)
 
 	r := apphttp.NewRouterWithOptions(
 		log,
 		apphttp.Options{
 			ReadyChecker:         cfg,
-			ConversionRepository: conversions.NewMongoRepository(db),
-			ConversionSink:       conversionSink,
-			ClickLookup:          clickLookup,
+			ConversionRepository: conversionRepo,
 			EventProducer:        eventProducer,
-			PostbackLogger: postbacklogs.NewMultiLogger(
-				postbacklogs.NewMongoLogger(db),
-				postbackEventLogger,
-			),
+			PostbackLogger:       postbackLogRepo,
+			PostbackSecrets:      postbacks.NewMongoSecretStore(db),
 		},
 	)
 

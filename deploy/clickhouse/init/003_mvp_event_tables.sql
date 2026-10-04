@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS traffoflex.click_events
 (
     created_at DateTime,
+    owner_id String,
     click_id String,
     campaign_id String,
     stream_id String,
@@ -44,12 +45,13 @@ CREATE TABLE IF NOT EXISTS traffoflex.click_events
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(created_at)
-ORDER BY (campaign_id, created_at, click_id);
+ORDER BY (owner_id, campaign_id, created_at, click_id);
 
 CREATE TABLE IF NOT EXISTS traffoflex.conversion_events
 (
     created_at DateTime,
     updated_at DateTime,
+    owner_id String,
     conversion_id String,
     click_id String,
     transaction_id String,
@@ -67,11 +69,12 @@ CREATE TABLE IF NOT EXISTS traffoflex.conversion_events
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(created_at)
-ORDER BY (campaign_id, created_at, click_id, transaction_id);
+ORDER BY (owner_id, campaign_id, created_at, click_id, transaction_id);
 
 CREATE TABLE IF NOT EXISTS traffoflex.postback_log_events
 (
     created_at DateTime,
+    owner_id String,
     postback_id String,
     network_id String,
     click_id String,
@@ -82,11 +85,12 @@ CREATE TABLE IF NOT EXISTS traffoflex.postback_log_events
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(created_at)
-ORDER BY (network_id, created_at, postback_id);
+ORDER BY (owner_id, network_id, created_at, postback_id);
 
 CREATE TABLE IF NOT EXISTS traffoflex.trafficback_events
 (
     created_at DateTime,
+    owner_id String,
     click_id String,
     campaign_id String,
     stream_id String,
@@ -97,11 +101,12 @@ CREATE TABLE IF NOT EXISTS traffoflex.trafficback_events
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(created_at)
-ORDER BY (campaign_id, created_at, click_id);
+ORDER BY (owner_id, campaign_id, created_at, click_id);
 
 CREATE TABLE IF NOT EXISTS traffoflex.destination_health_events
 (
     created_at DateTime,
+    owner_id String,
     destination_id String,
     previous String,
     current String,
@@ -109,4 +114,4 @@ CREATE TABLE IF NOT EXISTS traffoflex.destination_health_events
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(created_at)
-ORDER BY (destination_id, created_at);
+ORDER BY (owner_id, destination_id, created_at);

@@ -23,7 +23,7 @@ func Connect(
 	)
 	defer cancel()
 
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	client, err := Open(uri)
 	if err != nil {
 		return nil, err
 	}
@@ -40,6 +40,12 @@ func Connect(
 		return nil, err
 	}
 	return client, nil
+}
+
+// Open creates a client without requiring MongoDB to be reachable yet.
+// The driver reconnects when MongoDB becomes available.
+func Open(uri string) (*mongo.Client, error) {
+	return mongo.Connect(options.Client().ApplyURI(uri))
 }
 
 func Disconnect(

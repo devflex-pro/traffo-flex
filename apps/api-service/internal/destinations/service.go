@@ -16,15 +16,16 @@ var (
 )
 
 type DestinationRequest struct {
-	Name         string                     `json:"name"`
-	Type         models.DestinationType     `json:"type"`
-	URL          string                     `json:"url"`
-	ManualStatus models.Status              `json:"manual_status"`
-	HealthStatus models.HealthStatus        `json:"health_status"`
-	Redirect     models.RedirectConfig      `json:"redirect"`
-	Trafficback  models.TrafficbackConfig   `json:"trafficback_config"`
-	Schedule     models.DestinationSchedule `json:"schedule"`
-	Caps         models.DestinationCaps     `json:"caps"`
+	Name           string                     `json:"name"`
+	Type           models.DestinationType     `json:"type"`
+	URL            string                     `json:"url"`
+	HealthcheckURL string                     `json:"healthcheck_url,omitempty"`
+	ManualStatus   models.Status              `json:"manual_status"`
+	HealthStatus   models.HealthStatus        `json:"health_status"`
+	Redirect       models.RedirectConfig      `json:"redirect"`
+	Trafficback    models.TrafficbackConfig   `json:"trafficback_config"`
+	Schedule       models.DestinationSchedule `json:"schedule"`
+	Caps           models.DestinationCaps     `json:"caps"`
 }
 
 type Repository interface {
@@ -130,6 +131,7 @@ func (s *Service) Create(
 		Name:              strings.TrimSpace(req.Name),
 		Type:              req.Type,
 		URL:               strings.TrimSpace(req.URL),
+		HealthcheckURL:    strings.TrimSpace(req.HealthcheckURL),
 		ManualStatus:      req.ManualStatus,
 		HealthStatus:      req.HealthStatus,
 		Redirect:          req.Redirect,
@@ -171,6 +173,7 @@ func (s *Service) Update(
 	existing.Name = strings.TrimSpace(req.Name)
 	existing.Type = req.Type
 	existing.URL = strings.TrimSpace(req.URL)
+	existing.HealthcheckURL = strings.TrimSpace(req.HealthcheckURL)
 	existing.ManualStatus = req.ManualStatus
 	existing.HealthStatus = req.HealthStatus
 	existing.Redirect = req.Redirect
@@ -234,6 +237,14 @@ func validateRequest(req DestinationRequest) error {
 			ErrInvalidInput,
 			err,
 		)
+	}
+	if req.HealthcheckURL != "" {
+		if err := models.ValidateDestinationURL(strings.TrimSpace(req.HealthcheckURL)); err != nil {
+			return errors.Join(ErrInvalidInput, err)
+		}
+		if strings.ContainsAny(req.HealthcheckURL, "{}") {
+			return errors.Join(ErrInvalidInput, errors.New("healthcheck_url must not contain macros"))
+		}
 	}
 	if err := models.ValidateStatus(req.ManualStatus); err != nil {
 		return errors.Join(

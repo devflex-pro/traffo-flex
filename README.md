@@ -13,6 +13,8 @@ This repository is a foundation for further development of a production-ready pr
 - Incoming postback handling, conversion normalization, deduplication, outbound postbacks, and postback logs.
 - ClickHouse-backed reports for traffic, conversions, revenue, cost, profit, and ROI.
 - React admin panel for operating and reviewing the system locally.
+- Per-user workspaces for configuration and analytics. Administrators can open
+  another user's workspace and edit its data from the Users page.
 - Demo seed script for realistic local admin screenshots and workflow testing.
 
 ## Architecture
@@ -31,6 +33,16 @@ packages/
 The admin frontend talks only to `api-service`. High-load click handling belongs to `traffic-service`, and public postbacks belong to `postback-service`.
 
 MongoDB is the source of truth for configuration. ClickHouse is the source of truth for analytics events.
+
+## Install on a server
+
+On a fresh Debian 13 x86_64 server with Docker Engine and the Compose plugin, choose three distinct DNS names for the tracker, postbacks and admin panel. Point them to the server, open ports 80 and 443, then run:
+
+```bash
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/devflex-pro/traffo-flex/main/scripts/install-prod.sh | sudo bash -s -- --version latest'
+```
+
+The installer downloads the latest public release, pins its exact version, prompts for the three domains, admin email and mail delivery settings, and starts the Docker stack with TLS. It requires public GHCR images and does not clone this repository. See the [production deployment guide](./docs/production-deployment.md) for prerequisites, a version-pinned command, and remaining release checks.
 
 ## Quick Start
 

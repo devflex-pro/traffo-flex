@@ -33,10 +33,9 @@ func NewRouterWithReadyChecker(
 type Options struct {
 	ReadyChecker         httpx.ReadyChecker
 	ConversionRepository conversions.Repository
-	ConversionSink       conversions.EventSink
-	ClickLookup          conversions.ClickLookup
 	PostbackLogger       postbacklogs.Logger
 	EventProducer        *eventstream.Producer
+	PostbackSecrets      postbacks.SecretStore
 }
 
 func NewRouterWithOptions(
@@ -44,7 +43,13 @@ func NewRouterWithOptions(
 	opts Options,
 ) http.Handler {
 	r := chi.NewRouter()
-	h := postbacks.NewHandler(log)
+	h := postbacks.NewHandlerWithSecrets(
+		log,
+		conversions.NewService(conversions.NewMemoryRepository()),
+		nil,
+		postbacklogs.NewMemoryLogger(),
+		opts.PostbackSecrets,
+	)
 	if opts.ConversionRepository != nil || opts.PostbackLogger != nil {
 		repo := opts.ConversionRepository
 		if repo == nil {
@@ -54,19 +59,12 @@ func NewRouterWithOptions(
 		if postbackLogger == nil {
 			postbackLogger = postbacklogs.NewMemoryLogger()
 		}
-		conversionSink := opts.ConversionSink
-		if conversionSink == nil {
-			conversionSink = conversions.NewMemoryEventSink()
-		}
-		h = postbacks.NewHandlerWithDeps(
+		h = postbacks.NewHandlerWithSecrets(
 			log,
-			conversions.NewServiceWithDependencies(
-				repo,
-				conversionSink,
-				opts.ClickLookup,
-			),
+			conversions.NewService(repo),
 			nil,
 			postbackLogger,
+			opts.PostbackSecrets,
 		)
 	}
 	internalHandler := internalapi.NewHandler(

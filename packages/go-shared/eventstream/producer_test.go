@@ -99,6 +99,67 @@ func TestProducerStatsRecordSuccess(t *testing.T) {
 	}
 }
 
+func TestProducerWritesBatchInOneCall(t *testing.T) {
+	writer := &fakeWriter{}
+	producer := newProducerWithWriter(
+		Config{
+			ClientID:     "test",
+			WriteTimeout: time.Second,
+			MaxAttempts:  1,
+		},
+		writer,
+	)
+	err := producer.WriteJSONBatch(
+		context.Background(),
+		"clicks",
+		[]JSONEvent{
+			{Key: "clk_1", Value: map[string]string{"click_id": "clk_1"}},
+			{Key: "clk_2", Value: map[string]string{"click_id": "clk_2"}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.calls != 1 || len(writer.messages) != 2 ||
+		string(writer.messages[0].Key) != "clk_1" ||
+		string(writer.messages[1].Key) != "clk_2" {
+		t.Fatalf("unexpected batch: calls=%d messages=%#v", writer.calls, writer.messages)
+	}
+}
+
+func TestProducerRetriesOnlyFailedBatchMessages(t *testing.T) {
+	writer := &fakeWriter{
+		writeErrors: []error{
+			kafka.WriteErrors{nil, errors.New("temporary failure")},
+			nil,
+		},
+	}
+	producer := newProducerWithWriter(
+		Config{
+			ClientID:     "test",
+			WriteTimeout: time.Second,
+			MaxAttempts:  2,
+			RetryBackoff: time.Millisecond,
+		},
+		writer,
+	)
+	err := producer.WriteJSONBatch(
+		context.Background(),
+		"clicks",
+		[]JSONEvent{
+			{Key: "clk_1", Value: 1},
+			{Key: "clk_2", Value: 2},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.batches) != 2 || len(writer.batches[0]) != 2 ||
+		len(writer.batches[1]) != 1 || string(writer.batches[1][0].Key) != "clk_2" {
+		t.Fatalf("unexpected retry batches: %#v", writer.batches)
+	}
+}
+
 func TestProducerStatsRecordRetriesAndFailure(t *testing.T) {
 	writeErr := errors.New("broker unavailable")
 	producer := newProducerWithWriter(
@@ -192,7 +253,11 @@ func TestProducerStatsRecordMarshalFailure(t *testing.T) {
 }
 
 type fakeWriter struct {
-	err error
+	err         error
+	writeErrors []error
+	calls       int
+	messages    []kafka.Message
+	batches     [][]kafka.Message
 }
 
 func (w *fakeWriter) WriteMessages(
@@ -201,6 +266,12 @@ func (w *fakeWriter) WriteMessages(
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	w.calls++
+	w.messages = append(w.messages, msgs...)
+	w.batches = append(w.batches, append([]kafka.Message(nil), msgs...))
+	if len(w.writeErrors) >= w.calls {
+		return w.writeErrors[w.calls-1]
 	}
 	return w.err
 }

@@ -135,7 +135,11 @@ func CORS(allowedOrigin string) func(http.Handler) http.Handler {
 				)
 				w.Header().Set(
 					"Access-Control-Allow-Headers",
-					"Content-Type, Authorization, X-Request-ID",
+					"Content-Type, Authorization, X-Request-ID, X-TraffoFlex-CSRF, X-TraffoFlex-Act-As",
+				)
+				w.Header().Set(
+					"Access-Control-Allow-Credentials",
+					"true",
 				)
 				w.Header().Set(
 					"Access-Control-Allow-Methods",

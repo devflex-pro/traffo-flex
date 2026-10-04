@@ -40,14 +40,6 @@ func (l *MongoLoader) Load(ctx context.Context) (
 	if err != nil {
 		return nil, err
 	}
-	destinations, err := listDocuments[models.Destination](
-		ctx,
-		l.destinations,
-		bson.M{},
-	)
-	if err != nil {
-		return nil, err
-	}
 	healthStates, err := healthstate.LoadStates(
 		ctx,
 		l.db,
@@ -55,10 +47,6 @@ func (l *MongoLoader) Load(ctx context.Context) (
 	if err != nil {
 		return nil, err
 	}
-	overlayDestinationHealth(
-		destinations,
-		healthStates,
-	)
 
 	configs := make(
 		[]CampaignConfig,
@@ -66,13 +54,28 @@ func (l *MongoLoader) Load(ctx context.Context) (
 		len(campaigns),
 	)
 	for _, campaign := range campaigns {
+		destinationFilter := bson.M{}
+		streamFilter := bson.M{
+			"campaign_id": campaign.ID,
+			"status": string(models.StatusActive),
+		}
+		if campaign.OwnerID != "" {
+			destinationFilter["owner_id"] = campaign.OwnerID
+			streamFilter["owner_id"] = campaign.OwnerID
+		}
+		destinations, err := listDocuments[models.Destination](
+			ctx,
+			l.destinations,
+			destinationFilter,
+		)
+		if err != nil {
+			return nil, err
+		}
+		overlayDestinationHealth(destinations, healthStates)
 		streams, err := listDocuments[models.Stream](
 			ctx,
 			l.streams,
-			bson.M{
-				"campaign_id": campaign.ID,
-				"status":      string(models.StatusActive),
-			},
+			streamFilter,
 		)
 		if err != nil {
 			return nil, err

@@ -226,7 +226,7 @@ Done when:
 - List endpoints use a shared paginated response contract with `items`, `limit`, `offset` and `total` for admin CRUD lists, users, postback logs and destination health history.
 - Event producers expose in-process write/retry/failure/bytes counters through internal stats endpoints and include cumulative counters in structured write logs.
 - Destinations support schedule windows by weekday/time/timezone and caps by clicks, cost, conversions and revenue with custom hour windows.
-- Streams support anti-repeat destination routing by configurable user key, with ClickHouse-backed history checks and best ROI ranking.
+- Streams support anti-repeat destination routing by configurable user key, with a local Bloom filter seeded from ClickHouse history in the background and best ROI ranking.
 
 ## Data and migration risks
 
@@ -247,8 +247,33 @@ Done when:
 - Health status transitions.
 - API validation for all admin writes.
 
-## Production Follow-up Backlog
+## First production release gates
 
+The next milestone is a first production deployment with real traffic. Complete these gates before sending traffic to it:
+
+The target single-node Debian 13 deployment, shared Nginx/Certbot infrastructure and operational acceptance checks are specified in [production-deployment-plan.md](./production-deployment-plan.md).
+
+1. Make incoming postback authentication effective, persist conversions and dedupe state atomically, reconcile postbacks that arrive before their click is visible in ClickHouse, and make analytics delivery recoverable after a failed publish.
+2. Keep redirecting already-paid traffic when Kafka, ClickHouse or MongoDB is temporarily unavailable. Remove Kafka and ClickHouse network calls from the click redirect request path, define the configured fallback destination/trafficback for every active campaign, and test queue saturation, crash-loss and stale-snapshot behavior without rejecting clicks for analytics failures.
+3. Keep email OTP and JWT for the admin UI, but rate-limit OTP verification, restrict campaign/config CRUD to the admin role for the first release, and make logout revoke the server-side session. Do not store the production session token in browser localStorage.
+4. Restrict internal endpoints and data stores to private networks; replace local auth mode, example credentials and development frontend serving with production configuration. Require a deployment-specific JWT secret, disable OTP return in API responses and configure real email delivery.
+5. Verify backup and restore, dependency readiness, alerts, full click-to-conversion E2E, failure recovery and load-test latency on the deployment topology.
+
+## First production implementation backlog
+
+- Clicks now append to a bounded, persistent WAL before redirect; Redpanda publishing and retries happen in the background. The paid redirect continues if the WAL is full or unwritable, with losses counted at `/internal/event-queues/stats`. Trafficback events still use a bounded memory queue. The WAL is at least once: an uncertain Redpanda acknowledgement can replay a `click_id`, and current ClickHouse rollups can count it twice. Benchmark fsync and resolve report deduplication before exact billing.
+- Destination caps and ROI now refresh in a background worker; redirect selection reads an in-memory last-known-good snapshot. If a destination has a cap without any snapshot value, exclude it and use another configured destination or campaign trafficback. If ROI has no snapshot, use the configured fallback ranking. Monitor `/internal/availability/stats` for refresh failures, missing cap checks and snapshot age.
+- `traffic-service` now writes a checksum-protected campaign routing snapshot to a persistent volume after a successful MongoDB load. On startup it restores that snapshot before trying MongoDB, and keeps serving it while background refresh retries. An active campaign without a configured trafficback is rejected from the persistent routing cache. Monitor private `/internal/cache/stats` for `source`, `loaded_at`, `last_mongo_success`, and `last_mongo_error`; a `snapshot` source means routing is using stale configuration. Never use inbound `url` or `redirect_url` parameters as a fallback.
+- Harden background destination health checks: use configurable consecutive-failure and recovery thresholds, bounded probe work, and a probe URL that accurately represents destination availability. Exclude confirmed-unhealthy destinations from selection without doing a probe on the click path. When all destinations are unavailable, route to the campaign's configured loop-safe trafficback instead of returning 503.
+- Configure each campaign's trafficback URL and maximum chain depth in the admin campaign form; verify the fallback URL before enabling live traffic. If a trafficback target can return to TraffoFlex, include `trafficback_depth={trafficback_depth}` in its URL and preserve that parameter on the return request.
+- Incoming postbacks now store a conversion with a unique network/transaction key and pending delivery state in one MongoDB document. The receiver returns 200 for a previously accepted postback and never waits for ClickHouse or Redpanda. A background worker retries Redpanda delivery; a separate worker resolves the click ID in a compact ClickHouse lookup, retries late clicks, and publishes attributed conversion events. Reports and routing ROI use that smaller event table instead of joining every report against all clicks. Monitor pending delivery and attribution age. An isolated test covered one million synthetic clicks and 86,400 conversions; full end-to-end 1,000 clicks/s load and disk retention remain release gates.
+- Click reports now read minute or hour ClickHouse rollups; the minute rollup is filled directly from raw click events. Report time bounds round outward to minutes. Background caps and ROI read minute rollups and conservatively include the boundary minute. Existing ClickHouse volumes with the old second-based view chain require a controlled migration and backfill before switching readers.
+- Anti-repeat now uses a local, time-bucketed Bloom filter. The traffic-service checks and marks a selected destination atomically, saves bucket snapshots to a persistent volume, and loads ClickHouse history in a background worker after startup or policy changes. No history query runs on a click. Until history is ready, or if the Bloom memory/insertion budget is exhausted, the click uses campaign trafficback. Every active anti-repeat campaign therefore needs a configured trafficback.
+- Monitor private `/internal/anti-repeat/stats` for pending streams, seed errors, memory use, missing history and saturation. `BLOOM_FALSE_POSITIVE_RATE` defaults to 0.001; false positives may exclude unused destinations. `BLOOM_EXPECTED_KEYS_PER_BUCKET` and `BLOOM_MAX_MEMORY_MB` must be sized from measured traffic. Clicks lost when the WAL is full or unwritable cannot be recovered by Bloom snapshots or ClickHouse backfill.
+- Load-test click latency and verify queue overflow, Kafka outage, stale cap/ROI snapshots, Bloom rotation, destination health transitions, all-destinations-unhealthy fallback, concurrent clicks, restart recovery and shutdown behavior before real traffic.
+- Add per-account and per-IP OTP verification attempt limits; test lockout and recovery without preventing the configured admin from regaining access.
+- Apply admin-only authorization to config writes and reports for the first release; add explicit roles later only when their permitted actions are defined.
+- Replace localStorage token persistence with a Secure, HttpOnly, SameSite session cookie and server-side session revocation. Include CSRF protection for state-changing admin requests and test logout and expired sessions.
 - Add richer Resend email templates and bounce observability for OTP messages.
 - Add real external secret management for production deployments.
 - Automate backup/restore tooling for MongoDB and ClickHouse.

@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS traffoflex.click_events_queue
 (
     created_at DateTime,
+    owner_id String,
     click_id String,
     campaign_id String,
     stream_id String,
@@ -56,6 +57,7 @@ TO traffoflex.click_events
 AS
 SELECT
     created_at,
+    owner_id,
     click_id,
     campaign_id,
     stream_id,
@@ -103,6 +105,7 @@ CREATE TABLE IF NOT EXISTS traffoflex.conversion_events_queue
 (
     created_at DateTime,
     updated_at DateTime,
+    owner_id String,
     conversion_id String,
     click_id String,
     transaction_id String,
@@ -133,6 +136,7 @@ AS
 SELECT
     created_at,
     updated_at,
+    owner_id,
     conversion_id,
     click_id,
     transaction_id,
@@ -153,6 +157,7 @@ WHERE _error = '';
 CREATE TABLE IF NOT EXISTS traffoflex.postback_log_events_queue
 (
     created_at DateTime,
+    owner_id String,
     postback_id String,
     network_id String,
     click_id String,
@@ -175,6 +180,7 @@ TO traffoflex.postback_log_events
 AS
 SELECT
     created_at,
+    owner_id,
     postback_id,
     network_id,
     click_id,
@@ -188,6 +194,7 @@ WHERE _error = '';
 CREATE TABLE IF NOT EXISTS traffoflex.trafficback_events_queue
 (
     created_at DateTime,
+    owner_id String,
     click_id String,
     campaign_id String,
     stream_id String,
@@ -210,6 +217,7 @@ TO traffoflex.trafficback_events
 AS
 SELECT
     created_at,
+    owner_id,
     click_id,
     campaign_id,
     stream_id,
@@ -223,6 +231,7 @@ WHERE _error = '';
 CREATE TABLE IF NOT EXISTS traffoflex.destination_health_events_queue
 (
     created_at DateTime,
+    owner_id String,
     destination_id String,
     previous String,
     current String,
@@ -242,6 +251,7 @@ TO traffoflex.destination_health_events
 AS
 SELECT
     created_at,
+    owner_id,
     destination_id,
     previous,
     current,

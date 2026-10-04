@@ -4,10 +4,13 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/devflex/traffoflex/apps/traffic-service/internal/antirepeat"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/availability"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/cache"
+	"github.com/devflex/traffoflex/apps/traffic-service/internal/clickaudit"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/clicklog"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/config"
+	"github.com/devflex/traffoflex/apps/traffic-service/internal/eventqueue"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/healthcheck"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/redirects"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/requestctx"
@@ -36,15 +39,21 @@ func NewRouterWithReadyChecker(
 }
 
 type Options struct {
-	ReadyChecker  httpx.ReadyChecker
-	Cache         *cache.Store
-	Builder       *requestctx.Builder
-	ClickLogger   clicklog.Logger
-	Trafficback   trafficevents.TrafficbackSink
-	Health        trafficevents.DestinationHealthSink
-	HealthClient  *http.Client
-	EventProducer *eventstream.Producer
-	Availability  *availability.Evaluator
+	ReadyChecker         httpx.ReadyChecker
+	Cache                *cache.Store
+	Builder              *requestctx.Builder
+	ClickLogger          clicklog.Logger
+	Trafficback          trafficevents.TrafficbackSink
+	Health               trafficevents.DestinationHealthSink
+	HealthClient         *http.Client
+	HealthService        *healthcheck.Service
+	EventProducer        *eventstream.Producer
+	Availability         *availability.Evaluator
+	AvailabilitySnapshot *availability.Snapshot
+	AntiRepeat           *antirepeat.Manager
+	ClickQueue           interface{ Stats() eventqueue.Stats }
+	ClickAudit           interface{ Stats() clickaudit.Stats }
+	TrafficbackQueue     interface{ Stats() eventqueue.Stats }
 }
 
 func NewRouterWithConfig(
@@ -78,14 +87,15 @@ func NewRouterWithOptions(
 	}
 
 	r := chi.NewRouter()
-	healthcheckHandler := healthcheck.NewHandler(
-		log,
-		healthcheck.NewServiceWithClient(
+	healthService := opts.HealthService
+	if healthService == nil {
+		healthService = healthcheck.NewServiceWithClient(
 			store,
 			opts.Health,
 			opts.HealthClient,
-		),
-	)
+		)
+	}
+	healthcheckHandler := healthcheck.NewHandler(log, healthService)
 	redirectHandler := redirects.NewHandler(
 		log,
 		store,
@@ -93,6 +103,7 @@ func NewRouterWithOptions(
 		opts.ClickLogger,
 		opts.Trafficback,
 		opts.Availability,
+		opts.AntiRepeat,
 	)
 
 	r.Use(httpx.RequestID)
@@ -108,6 +119,20 @@ func NewRouterWithOptions(
 		"/readyz",
 		httpx.ReadyHandler(opts.ReadyChecker),
 	)
+	if opts.Cache != nil {
+		r.Get(
+			"/internal/cache/stats",
+			func(w http.ResponseWriter, r *http.Request) {
+				if err := httpx.JSON(
+					w,
+					http.StatusOK,
+					store.Status(),
+				); err != nil {
+					log.Error("failed to write cache stats", "error", err)
+				}
+			},
+		)
+	}
 	if opts.EventProducer != nil {
 		r.Get(
 			"/internal/event-producer/stats",
@@ -128,6 +153,58 @@ func NewRouterWithOptions(
 				}
 			},
 		)
+	}
+	if opts.ClickQueue != nil && opts.TrafficbackQueue != nil {
+		r.Get(
+			"/internal/event-queues/stats",
+			func(w http.ResponseWriter, r *http.Request) {
+				if err := httpx.JSON(
+					w,
+					http.StatusOK,
+					map[string]eventqueue.Stats{
+						"clicks":      opts.ClickQueue.Stats(),
+						"trafficback": opts.TrafficbackQueue.Stats(),
+					},
+				); err != nil {
+					log.Error("failed to write event queue stats", "error", err)
+				}
+			},
+		)
+	}
+	if opts.ClickAudit != nil {
+		r.Get(
+			"/internal/click-audit/stats",
+			func(w http.ResponseWriter, r *http.Request) {
+				if err := httpx.JSON(
+					w,
+					http.StatusOK,
+					opts.ClickAudit.Stats(),
+				); err != nil {
+					log.Error("failed to write click audit stats", "error", err)
+				}
+			},
+		)
+	}
+	if opts.AvailabilitySnapshot != nil {
+		r.Get(
+			"/internal/availability/stats",
+			func(w http.ResponseWriter, r *http.Request) {
+				if err := httpx.JSON(
+					w,
+					http.StatusOK,
+					opts.AvailabilitySnapshot.Stats(),
+				); err != nil {
+					log.Error("failed to write availability stats", "error", err)
+				}
+			},
+		)
+	}
+	if opts.AntiRepeat != nil {
+		r.Get("/internal/anti-repeat/stats", func(w http.ResponseWriter, r *http.Request) {
+			if err := httpx.JSON(w, http.StatusOK, opts.AntiRepeat.Stats()); err != nil {
+				log.Error("failed to write anti-repeat stats", "error", err)
+			}
+		})
 	}
 
 	r.Get(

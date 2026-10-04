@@ -3,27 +3,34 @@ package healthcheck
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
 type Worker struct {
-	log      *slog.Logger
-	service  *Service
-	interval time.Duration
+	log         *slog.Logger
+	service     *Service
+	interval    time.Duration
+	parallelism int
 }
 
 func NewWorker(
 	log *slog.Logger,
 	service *Service,
 	interval time.Duration,
+	parallelism int,
 ) *Worker {
 	if interval <= 0 {
 		interval = time.Minute
 	}
+	if parallelism <= 0 {
+		parallelism = 4
+	}
 	return &Worker{
-		log:      log,
-		service:  service,
-		interval: interval,
+		log:         log,
+		service:     service,
+		interval:    interval,
+		parallelism: parallelism,
 	}
 }
 
@@ -46,35 +53,25 @@ func (w *Worker) run(ctx context.Context) {
 }
 
 func (w *Worker) runOnce(ctx context.Context) {
+	sem := make(chan struct{}, w.parallelism)
+	var pending sync.WaitGroup
+	defer pending.Wait()
 	for _, destinationID := range w.service.DestinationIDs() {
-		if err := ctx.Err(); err != nil {
-			w.log.Warn(
-				"destination healthcheck worker stopped",
-				"error",
-				err,
-			)
+		select {
+		case <-ctx.Done():
 			return
+		case sem <- struct{}{}:
 		}
-		result, err := w.service.Trigger(
-			ctx,
-			destinationID,
-		)
-		if err != nil {
-			w.log.Warn(
-				"destination healthcheck failed",
-				"error",
-				err,
-				"destination_id",
-				destinationID,
-			)
-			continue
-		}
-		w.log.Info(
-			"destination healthcheck completed",
-			"destination_id",
-			result.DestinationID,
-			"status",
-			result.Status,
-		)
+		pending.Add(1)
+		go func(id string) {
+			defer pending.Done()
+			defer func() { <-sem }()
+			result, err := w.service.Trigger(ctx, id)
+			if err != nil {
+				w.log.Warn("destination healthcheck failed", "destination_id", id, "error", err)
+				return
+			}
+			w.log.Info("destination healthcheck completed", "destination_id", result.DestinationID, "status", result.Status, "probe_error", result.Error)
+		}(destinationID)
 	}
 }

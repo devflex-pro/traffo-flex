@@ -1,0 +1,14 @@
+.git
+.github
+.env
+.env.*
+!.env.production.example
+!deploy/infra/.env.example
+**/node_modules
+**/dist
+**/build
+**/*.log
+**/*.tmp
+**/coverage
+docs/*
+!docs/production-deployment.md

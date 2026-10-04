@@ -79,6 +79,7 @@ func (s *KafkaDestinationHealthSink) WriteDestinationHealth(
 		event.DestinationID,
 		destinationHealthRow{
 			CreatedAt:     eventstream.ClickHouseDateTime(event.CreatedAt),
+			OwnerID:       event.OwnerID,
 			DestinationID: event.DestinationID,
 			Previous:      string(event.Previous),
 			Current:       string(event.Current),
@@ -89,6 +90,7 @@ func (s *KafkaDestinationHealthSink) WriteDestinationHealth(
 
 type destinationHealthRow struct {
 	CreatedAt     string `json:"created_at"`
+	OwnerID       string `json:"owner_id"`
 	DestinationID string `json:"destination_id"`
 	Previous      string `json:"previous"`
 	Current       string `json:"current"`

@@ -34,20 +34,25 @@ var (
 	ErrNotFound        = errors.New("user not found")
 	ErrOTPActive       = errors.New("otp is still active")
 	ErrOTPRateLimited  = errors.New("otp request rate limited")
+	ErrOTPAttempts     = errors.New("too many invalid otp attempts")
 )
 
+const maxOTPAttempts = 5
+
 type User struct {
-	ID             string    `json:"id"`
-	Email          string    `json:"email"`
-	Role           string    `json:"role"`
-	Status         string    `json:"status"`
-	EmailVerified  bool      `json:"email_verified"`
-	Approved       bool      `json:"approved"`
-	OTPHash        string    `json:"-"`
-	OTPExpiresAt   time.Time `json:"-"`
-	OTPRequestedAt time.Time `json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                string    `json:"id"`
+	Email             string    `json:"email"`
+	Role              string    `json:"role"`
+	Status            string    `json:"status"`
+	EmailVerified     bool      `json:"email_verified"`
+	Approved          bool      `json:"approved"`
+	OTPHash           string    `json:"-"`
+	OTPExpiresAt      time.Time `json:"-"`
+	OTPRequestedAt    time.Time `json:"-"`
+	OTPFailedAttempts int       `json:"-"`
+	SessionVersion    int64     `json:"-"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type Repository interface {
@@ -76,15 +81,19 @@ type Repository interface {
 		User,
 		error,
 	)
+	RecordOTPFailure(ctx context.Context, id, otpHash string) error
+	RevokeSessions(ctx context.Context, id string, version int64) error
 }
 
 type Config struct {
-	AdminEmail   string
-	JWTSecret    string
-	OTPTTL       time.Duration
-	OTPRateLimit time.Duration
-	SessionTTL   time.Duration
-	DevReturnOTP bool
+	AdminEmail    string
+	JWTSecret     string
+	OTPTTL        time.Duration
+	OTPRateLimit  time.Duration
+	SessionTTL    time.Duration
+	DevReturnOTP  bool
+	CookieSecure  bool
+	AllowedOrigin string
 }
 
 type OTPChallenge struct {
@@ -177,6 +186,7 @@ func (s *Service) RequestOTP(
 	)
 	user.OTPExpiresAt = now.Add(s.cfg.OTPTTL)
 	user.OTPRequestedAt = now
+	user.OTPFailedAttempts = 0
 	user.UpdatedAt = now
 	if _, err := s.repo.SaveUser(
 		ctx,
@@ -243,6 +253,9 @@ func (s *Service) VerifyOTP(
 	if user.OTPHash == "" || s.now().After(user.OTPExpiresAt) {
 		return Session{}, ErrInvalidOTP
 	}
+	if user.OTPFailedAttempts >= maxOTPAttempts {
+		return Session{}, ErrOTPAttempts
+	}
 	if !hmac.Equal(
 		[]byte(user.OTPHash),
 		[]byte(s.hashOTP(
@@ -250,6 +263,13 @@ func (s *Service) VerifyOTP(
 			otp,
 		)),
 	) {
+		if err := s.repo.RecordOTPFailure(
+			ctx,
+			user.ID,
+			user.OTPHash,
+		); err != nil {
+			return Session{}, err
+		}
 		return Session{}, ErrInvalidOTP
 	}
 
@@ -257,6 +277,7 @@ func (s *Service) VerifyOTP(
 	user.EmailVerified = true
 	user.OTPHash = ""
 	user.OTPExpiresAt = time.Time{}
+	user.OTPFailedAttempts = 0
 	user.UpdatedAt = s.now()
 	user, err = s.repo.SaveUser(
 		ctx,
@@ -300,7 +321,25 @@ func (s *Service) Authenticate(
 	if !user.Approved {
 		return User{}, ErrPendingApproval
 	}
+	if claims.SessionVersion != user.SessionVersion {
+		return User{}, ErrInvalidToken
+	}
 	return user, nil
+}
+
+func (s *Service) Logout(ctx context.Context, token string) error {
+	claims, err := s.verifyToken(token)
+	if err != nil {
+		return err
+	}
+	user, err := s.repo.GetUser(ctx, claims.Subject)
+	if err != nil {
+		return err
+	}
+	if user.SessionVersion != claims.SessionVersion {
+		return ErrInvalidToken
+	}
+	return s.repo.RevokeSessions(ctx, user.ID, user.SessionVersion)
 }
 
 func (s *Service) ListUsers(ctx context.Context) (
@@ -386,11 +425,12 @@ type tokenHeader struct {
 }
 
 type tokenClaims struct {
-	Subject  string `json:"sub"`
-	Email    string `json:"email"`
-	Role     string `json:"role"`
-	Approved bool   `json:"approved"`
-	Expires  int64  `json:"exp"`
+	Subject        string `json:"sub"`
+	Email          string `json:"email"`
+	Role           string `json:"role"`
+	Approved       bool   `json:"approved"`
+	Expires        int64  `json:"exp"`
+	SessionVersion int64  `json:"sv"`
 }
 
 func (s *Service) signToken(user User) (
@@ -402,11 +442,12 @@ func (s *Service) signToken(user User) (
 		Typ: "JWT",
 	}
 	claims := tokenClaims{
-		Subject:  user.ID,
-		Email:    user.Email,
-		Role:     user.Role,
-		Approved: user.Approved,
-		Expires:  s.now().Add(s.cfg.SessionTTL).Unix(),
+		Subject:        user.ID,
+		Email:          user.Email,
+		Role:           user.Role,
+		Approved:       user.Approved,
+		Expires:        s.now().Add(s.cfg.SessionTTL).Unix(),
+		SessionVersion: user.SessionVersion,
 	}
 	headerPart, err := encodeTokenPart(header)
 	if err != nil {

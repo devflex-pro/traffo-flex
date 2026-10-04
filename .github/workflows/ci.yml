@@ -1,0 +1,164 @@
+name: CI and images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/admin-frontend/package-lock.json
+      - name: Go tests and vet
+        run: |
+          for module in packages/go-shared apps/api-service apps/traffic-service apps/postback-service; do
+            (cd "$module" && go test ./... && go vet ./...)
+          done
+      - name: Frontend build
+        run: |
+          npm ci --prefix apps/admin-frontend
+          npm run build --prefix apps/admin-frontend
+        env:
+          VITE_API_BASE_URL: ""
+      - name: Installer syntax
+        run: |
+          bash -n scripts/install-prod.sh
+          bash -n scripts/render-nginx-prod.sh
+          bash scripts/install-prod.sh --help >/dev/null
+          env_file=$(mktemp)
+          trap 'rm -f "$env_file"' EXIT
+          printf 'TRACKER_DOMAIN=trk.example.com\nPOSTBACK_DOMAIN=pb.example.com\nAPP_DOMAIN=app.example.com\n' > "$env_file"
+          rendered=$(bash scripts/render-nginx-prod.sh deploy/infra/nginx/conf.d/traffoflex.conf.example "$env_file")
+          [[ "$rendered" == *'server_name trk.example.com pb.example.com app.example.com;'* ]]
+          [[ "$rendered" != *'__TRACKER_DOMAIN__'* ]]
+          ! bash scripts/render-nginx-prod.sh --validate 'https://trk.example.com' pb.example.com app.example.com
+          ! bash scripts/render-nginx-prod.sh --validate trk.example.com trk.example.com app.example.com
+      - name: Validate Compose files
+        env:
+          IMAGE_TAG: ci
+          MONGO_ROOT_USER: ci_root
+          MONGO_ROOT_PASSWORD: ci_root_password
+          MONGO_APP_USER: ci_app
+          MONGO_APP_PASSWORD: ci_app_password
+          CLICKHOUSE_USER: ci_user
+          CLICKHOUSE_PASSWORD: ci_password
+          AUTH_ADMIN_EMAIL: admin@example.invalid
+          AUTH_JWT_SECRET: ci_only_test_secret
+          AUTH_EMAIL_FROM: ci@example.invalid
+          AUTH_RESEND_API_KEY: ci_only_test_key
+          NGINX_PROXY_CIDR: 172.30.240.10/32
+          NGINX_PROXY_IP: 172.30.240.10
+          APP_DOMAIN: app.example.com
+        run: |
+          docker compose -f deploy/docker-compose.prod.yml config --quiet
+          docker compose -f deploy/infra/compose.yml config --quiet
+
+  release-notes:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require a changelog section for the tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9]+)*$ ]]
+          grep -Fq "## [${RELEASE_TAG}]" CHANGELOG.md
+
+  images:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [tests, release-notes]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api-service
+            dockerfile: apps/api-service/Dockerfile
+          - service: traffic-service
+            dockerfile: apps/traffic-service/Dockerfile
+          - service: postback-service
+            dockerfile: apps/postback-service/Dockerfile
+          - service: admin-frontend
+            dockerfile: apps/admin-frontend/Dockerfile.prod
+          - service: clickhouse
+            dockerfile: deploy/clickhouse/prod/Dockerfile
+          - service: deploy-bundle
+            dockerfile: deploy/bundle/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require release tag to point into main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push release image
+        env:
+          SERVICE: ${{ matrix.service }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-${SERVICE}"
+          ref_tag="${image}:${GITHUB_REF_NAME}"
+          docker build --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" --label "org.opencontainers.image.version=${GITHUB_REF_NAME}" -f "$DOCKERFILE" -t "$ref_tag" .
+          docker push "$ref_tag"
+
+  latest:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote all release images to latest
+        run: |
+          for service in api-service traffic-service postback-service admin-frontend clickhouse deploy-bundle; do
+            image="ghcr.io/${GITHUB_REPOSITORY,,}-${service}"
+            docker pull "${image}:${GITHUB_REF_NAME}"
+            docker tag "${image}:${GITHUB_REF_NAME}" "${image}:latest"
+            docker push "${image}:latest"
+          done
+      - name: Verify anonymous GHCR access
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/anonymous-docker
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          for service in api-service traffic-service postback-service admin-frontend clickhouse deploy-bundle; do
+            image="ghcr.io/${GITHUB_REPOSITORY,,}-${service}"
+            docker manifest inspect "${image}:${GITHUB_REF_NAME}" >/dev/null || {
+              echo "::error::${image} is not public. Set package visibility to Public in GHCR."
+              exit 1
+            }
+            docker manifest inspect "${image}:latest" >/dev/null || {
+              echo "::error::${image}:latest is not public. Set package visibility to Public in GHCR."
+              exit 1
+            }
+          done

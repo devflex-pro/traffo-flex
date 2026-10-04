@@ -345,24 +345,29 @@ func (c *ClickHouseCapChecker) querySQL(
 	return body, nil
 }
 
+const attributedConversionsSource = `(SELECT owner_id, conversion_id,
+  any(created_at) AS created_at, any(payout) AS payout,
+  any(destination_id) AS destination_id
+  FROM attributed_conversion_events GROUP BY owner_id, conversion_id)`
+
 func buildCapSQL(
 	destinationID string,
 	rule models.DestinationCapRule,
 ) string {
-	table := "click_events"
-	expression := "count()"
+	table := "click_stats_1m"
+	expression := "sum(clicks)"
 	switch rule.Metric {
 	case models.CapMetricCost:
 		expression = "sum(cost)"
 	case models.CapMetricConversions:
-		table = "conversion_events"
+		table = attributedConversionsSource
 		expression = "count()"
 	case models.CapMetricRevenue:
-		table = "conversion_events"
+		table = attributedConversionsSource
 		expression = "sum(payout)"
 	}
 	return fmt.Sprintf(
-		"SELECT %s AS value FROM %s WHERE destination_id = %s AND created_at >= now() - INTERVAL %d HOUR FORMAT JSONEachRow",
+		"SELECT %s AS value FROM %s WHERE destination_id = %s AND created_at >= toStartOfMinute(now() - INTERVAL %d HOUR) FORMAT JSONEachRow",
 		expression,
 		table,
 		quoteString(destinationID),
@@ -392,13 +397,13 @@ func buildROISQL(
 	return fmt.Sprintf(
 		`SELECT destination_id, sum(clicks) AS clicks, sum(conversions) AS conversions, sum(revenue) AS revenue, sum(cost) AS cost
 FROM (
-  SELECT destination_id, count() AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
-  FROM click_events
-  WHERE destination_id IN (%s) AND created_at >= now() - INTERVAL %d HOUR
+  SELECT destination_id, sum(clicks) AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
+  FROM click_stats_1m
+  WHERE destination_id IN (%s) AND created_at >= toStartOfMinute(now() - INTERVAL %d HOUR)
   GROUP BY destination_id
   UNION ALL
   SELECT destination_id, 0 AS clicks, count() AS conversions, sum(payout) AS revenue, 0.0 AS cost
-  FROM conversion_events
+  FROM %s
   WHERE destination_id IN (%s) AND created_at >= now() - INTERVAL %d HOUR
   GROUP BY destination_id
 )
@@ -406,6 +411,7 @@ GROUP BY destination_id
 FORMAT JSONEachRow`,
 		inList,
 		windowHours,
+		attributedConversionsSource,
 		inList,
 		windowHours,
 	)
@@ -437,6 +443,10 @@ func userKeyExpression(userKey string) (
 		return "JSONExtractString(query, " + quoteString(field) + ")", nil
 	}
 	return "", errors.New("user key is unsupported by clickhouse history")
+}
+
+func UserKeyExpression(userKey string) (string, error) {
+	return userKeyExpression(userKey)
 }
 
 func quoteString(value string) string {

@@ -50,3 +50,29 @@ func TestValidateRejectsInvalidTrustedProxyCIDR(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestValidateRejectsInvalidEventQueueSettings(t *testing.T) {
+	cfg := Load()
+	cfg.EventQueueSize = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for zero event queue size")
+	}
+	cfg = Load()
+	cfg.EventDrainTimeout = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for zero event drain timeout")
+	}
+}
+
+func TestValidateRejectsInvalidHealthcheckSettings(t *testing.T) {
+	cfg := Load()
+	cfg.HealthcheckFailures = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid failure threshold")
+	}
+	cfg = Load()
+	cfg.HealthcheckParallelism = 33
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid probe parallelism")
+	}
+}

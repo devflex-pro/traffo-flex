@@ -48,12 +48,18 @@ func TestClickHouseCapCheckerExceeded(t *testing.T) {
 	}
 	if !strings.Contains(
 		doer.sql,
-		"click_events",
+		"click_stats_1m",
 	) {
 		t.Fatalf(
-			"query = %q, want click_events",
+			"query = %q, want click_stats_1m",
 			doer.sql,
 		)
+	}
+	if !strings.Contains(doer.sql, "sum(clicks)") {
+		t.Fatalf("click cap must sum the rollup count: %s", doer.sql)
+	}
+	if !strings.Contains(doer.sql, "toStartOfMinute(now() - INTERVAL 24 HOUR)") {
+		t.Fatalf("click cap must include the boundary minute: %s", doer.sql)
 	}
 }
 
@@ -68,10 +74,10 @@ func TestBuildCapSQLUsesConversionTableForRevenue(t *testing.T) {
 	)
 	if !strings.Contains(
 		sql,
-		"conversion_events",
+		"attributed_conversion_events",
 	) {
 		t.Fatalf(
-			"sql = %q, want conversion_events",
+			"sql = %q, want attributed_conversion_events",
 			sql,
 		)
 	}
@@ -83,6 +89,22 @@ func TestBuildCapSQLUsesConversionTableForRevenue(t *testing.T) {
 			"sql = %q, want sum(payout)",
 			sql,
 		)
+	}
+	if strings.Contains(sql, "FROM click_events GROUP BY click_id") {
+		t.Fatalf("revenue cap scans all clicks: %s", sql)
+	}
+}
+
+func TestBuildROISQLAttributesByClickID(t *testing.T) {
+	sql := buildROISQL([]string{"dst_1"}, 24)
+	if !strings.Contains(sql, "FROM attributed_conversion_events") {
+		t.Fatalf("ROI must use attributed conversions: %s", sql)
+	}
+	if !strings.Contains(sql, "FROM click_stats_1m") || strings.Contains(sql, "FROM click_events") {
+		t.Fatalf("ROI must use the minute click rollup: %s", sql)
+	}
+	if !strings.Contains(sql, "toStartOfMinute(now() - INTERVAL 24 HOUR)") {
+		t.Fatalf("ROI must use minute-aligned window: %s", sql)
 	}
 }
 

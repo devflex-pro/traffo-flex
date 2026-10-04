@@ -13,12 +13,15 @@ CLICKHOUSE_USER="${CLICKHOUSE_USER:-default}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-traffoflex}"
 CLICKHOUSE_DATABASE="${CLICKHOUSE_DATABASE:-traffoflex}"
 RUN_ID="${RUN_ID:-$(date +%s)}"
+COMPOSE_PROJECT_NAME="traffoflex-smoke-${RUN_ID}"
+export COMPOSE_PROJECT_NAME
 SLUG="e2e-${RUN_ID}"
-SOURCE_ID="src_e2e_${RUN_ID}"
 TRANSACTION_ID="tx_e2e_${RUN_ID}"
+POSTBACK_SECRET="smoke_${RUN_ID}"
 TMP_DIR="$(mktemp -d)"
 CREATED_ENV=0
 AUTH_TOKEN=""
+ACT_AS_USER_ID=""
 
 cd "$ROOT_DIR"
 
@@ -52,7 +55,10 @@ json_field() {
   local file=$1
   local field=$2
   python3 -c 'import json, sys
-print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$file" "$field"
+value = json.load(open(sys.argv[1]))
+for key in sys.argv[2].split("."):
+    value = value[key]
+print(value)' "$file" "$field"
 }
 
 http_json() {
@@ -65,6 +71,9 @@ http_json() {
 
   if [[ -n "$AUTH_TOKEN" ]]; then
     auth_args=(-H "Authorization: Bearer $AUTH_TOKEN")
+  fi
+  if [[ -n "$ACT_AS_USER_ID" ]]; then
+    auth_args+=(-H "X-TraffoFlex-Act-As: $ACT_AS_USER_ID")
   fi
 
   if [[ -n "$body" ]]; then
@@ -169,7 +178,7 @@ docker compose \
   -d
 
 wait_http "$API_URL/readyz" "ready" "api-service"
-wait_http "$TRAFFIC_URL/readyz" "ready" "traffic-service"
+wait_http "$TRAFFIC_URL/healthz" "ok" "traffic-service"
 wait_http "$POSTBACK_URL/readyz" "ready" "postback-service"
 wait_http "$ADMIN_URL/" "TraffoFlex" "admin-frontend"
 
@@ -189,9 +198,29 @@ http_json \
   "$(printf '{"email":"%s","otp":"%s"}' "$ADMIN_EMAIL" "$ADMIN_OTP")" \
   "$TMP_DIR/auth-session.json"
 AUTH_TOKEN="$(json_field "$TMP_DIR/auth-session.json" token)"
+ADMIN_TOKEN="$AUTH_TOKEN"
+
+http_json \
+  POST \
+  "$API_URL/api/traffic-sources" \
+  "$(printf '{"name":"E2E Source %s","slug":"e2e-source-%s"}' "$RUN_ID" "$RUN_ID")" \
+  "$TMP_DIR/source.json"
+SOURCE_ID="$(json_field "$TMP_DIR/source.json" id)"
+http_json \
+  POST \
+  "$API_URL/api/affiliate-networks" \
+  "$(printf '{"name":"E2E Network %s","slug":"e2e-network-%s"}' "$RUN_ID" "$RUN_ID")" \
+  "$TMP_DIR/network.json"
+NETWORK_ID="$(json_field "$TMP_DIR/network.json" id)"
+
+http_json \
+  POST \
+  "$API_URL/api/postback-templates" \
+  "$(printf '{"network_id":"%s","name":"E2E Postback %s","slug":"e2e-%s","secret":"%s","mapping":{"click_id":"cid"}}' "$NETWORK_ID" "$RUN_ID" "$RUN_ID" "$POSTBACK_SECRET")" \
+  "$TMP_DIR/postback-template.json"
 
 DESTINATION_BODY="$(printf '{"name":"E2E Destination %s","type":"url","url":"http://api-service:8070/healthz?cid={click_id}","manual_status":"active","health_status":"healthy","redirect":{"mode":"http_302"}}' "$RUN_ID")"
-CAMPAIGN_BODY="$(printf '{"name":"E2E Campaign %s","slug":"%s","status":"active","traffic_source_id":"%s"}' "$RUN_ID" "$SLUG" "$SOURCE_ID")"
+CAMPAIGN_BODY="$(printf '{"name":"E2E Campaign %s","slug":"%s","status":"active","traffic_source_id":"%s","trafficback_config":{"enabled":true,"url":"http://api-service:8070/healthz","max_depth":3}}' "$RUN_ID" "$SLUG" "$SOURCE_ID")"
 
 http_json \
   POST \
@@ -220,6 +249,7 @@ http_json \
   "$API_URL/api/internal/traffic/cache/reload" \
   "" \
   "$TMP_DIR/reload.json"
+wait_http "$TRAFFIC_URL/readyz" "ready" "traffic-service"
 
 log "executing click flow"
 CLICK_HEADERS="$TMP_DIR/click.headers"
@@ -241,6 +271,16 @@ wait_clickhouse_row \
   "SELECT click_id, campaign_id, stream_id, destination_id, source_id, cost, currency FROM click_events WHERE click_id = '$CLICK_ID' FORMAT JSONEachRow" \
   "$TMP_DIR/click-event.json" \
   "click event"
+wait_clickhouse_row \
+  "SELECT click_id FROM click_attribution_lookup WHERE click_id = '$CLICK_ID' FORMAT JSONEachRow" \
+  "$TMP_DIR/click-attribution.json" \
+  "click attribution lookup"
+for granularity in 1m 1h; do
+  wait_clickhouse_row \
+    "SELECT campaign_id, sum(clicks) AS clicks, sum(cost) AS cost FROM click_stats_$granularity WHERE campaign_id = '$CAMPAIGN_ID' GROUP BY campaign_id HAVING clicks = 1 FORMAT JSONEachRow" \
+    "$TMP_DIR/click-stats-$granularity.json" \
+    "click stats $granularity"
+done
 
 python3 -c 'import json, sys
 row = json.load(open(sys.argv[1]))
@@ -265,27 +305,32 @@ if float(row.get("cost")) != 1.25:
 log "executing postback flow"
 http_json \
   GET \
-  "$POSTBACK_URL/pb/e2e-net?cid=$CLICK_ID&tx=$TRANSACTION_ID&sum=7.77&currency=USD&status=approved" \
+  "$POSTBACK_URL/pb/$NETWORK_ID?cid=$CLICK_ID&tx=$TRANSACTION_ID&sum=7.77&currency=USD&status=approved&secret=$POSTBACK_SECRET" \
   "" \
   "$TMP_DIR/postback.json"
 CONVERSION_ID="$(json_field "$TMP_DIR/postback.json" conversion_id)"
+POSTBACK_ID="$(json_field "$TMP_DIR/postback.json" postback_id)"
 
 wait_clickhouse_row \
-  "SELECT conversion_id, click_id, transaction_id, campaign_id, stream_id, destination_id, source_id, payout, currency, network_id FROM conversion_events WHERE conversion_id = '$CONVERSION_ID' FORMAT JSONEachRow" \
+  "SELECT conversion_id, click_id, transaction_id, payout, currency, network_id FROM conversion_events WHERE conversion_id = '$CONVERSION_ID' FORMAT JSONEachRow" \
   "$TMP_DIR/conversion-event.json" \
   "conversion event"
+wait_clickhouse_row \
+  "SELECT conversion_id, campaign_id, stream_id, destination_id, source_id FROM attributed_conversion_events WHERE conversion_id = '$CONVERSION_ID' FORMAT JSONEachRow" \
+  "$TMP_DIR/attributed-conversion.json" \
+  "attributed conversion event"
+wait_clickhouse_row \
+  "SELECT postback_id FROM postback_log_events WHERE postback_id = '$POSTBACK_ID' FORMAT JSONEachRow" \
+  "$TMP_DIR/postback-log-event.json" \
+  "postback log event"
 
 python3 -c 'import json, sys
 row = json.load(open(sys.argv[1]))
 expected = {
     "click_id": sys.argv[2],
     "transaction_id": sys.argv[3],
-    "campaign_id": sys.argv[4],
-    "stream_id": sys.argv[5],
-    "destination_id": sys.argv[6],
-    "source_id": sys.argv[7],
     "currency": "USD",
-    "network_id": "e2e-net",
+    "network_id": sys.argv[4],
 }
 for key, value in expected.items():
     if row.get(key) != value:
@@ -295,10 +340,16 @@ if float(row.get("payout")) != 7.77:
   "$TMP_DIR/conversion-event.json" \
   "$CLICK_ID" \
   "$TRANSACTION_ID" \
-  "$CAMPAIGN_ID" \
-  "$STREAM_ID" \
-  "$DESTINATION_ID" \
-  "$SOURCE_ID"
+  "$NETWORK_ID"
+
+http_json \
+  GET \
+  "$POSTBACK_URL/pb/$NETWORK_ID?cid=$CLICK_ID&tx=$TRANSACTION_ID&sum=7.77&currency=USD&status=approved&secret=$POSTBACK_SECRET" \
+  "" \
+  "$TMP_DIR/postback-duplicate.json"
+if [[ "$(json_field "$TMP_DIR/postback-duplicate.json" conversion_id)" != "$CONVERSION_ID" ]]; then
+  fail "duplicate postback returned a different conversion ID"
+fi
 
 http_json \
   GET \
@@ -315,6 +366,72 @@ if float(overview.get("revenue")) != 7.77:
     raise SystemExit(f"revenue={overview.get('revenue')!r}, want 7.77")
 if float(overview.get("cost")) != 1.25:
     raise SystemExit(f"cost={overview.get('cost')!r}, want 1.25")' "$TMP_DIR/overview.json"
+
+log "verifying user isolation and admin editing"
+USER_EMAIL="e2e-user-${RUN_ID}@example.com"
+http_json \
+  POST \
+  "$API_URL/api/auth/request-otp" \
+  "$(printf '{"email":"%s"}' "$USER_EMAIL")" \
+  "$TMP_DIR/user-otp.json"
+USER_OTP="$(json_field "$TMP_DIR/user-otp.json" otp)"
+http_json GET "$API_URL/api/users" "" "$TMP_DIR/users.json"
+USER_ID="$(python3 -c 'import json, sys
+users = json.load(open(sys.argv[1]))["items"]
+print(next(user["id"] for user in users if user["email"] == sys.argv[2]))' "$TMP_DIR/users.json" "$USER_EMAIL")"
+http_json POST "$API_URL/api/users/$USER_ID/approve" "" "$TMP_DIR/user-approved.json"
+http_json \
+  POST \
+  "$API_URL/api/auth/verify-otp" \
+  "$(printf '{"email":"%s","otp":"%s"}' "$USER_EMAIL" "$USER_OTP")" \
+  "$TMP_DIR/user-session.json"
+AUTH_TOKEN="$(json_field "$TMP_DIR/user-session.json" token)"
+http_json GET "$API_URL/api/campaigns" "" "$TMP_DIR/user-campaigns.json"
+python3 -c 'import json, sys
+items = json.load(open(sys.argv[1]))["items"]
+assert items == [], items' "$TMP_DIR/user-campaigns.json"
+http_json GET "$API_URL/api/reports/overview" "" "$TMP_DIR/user-overview.json"
+python3 -c 'import json, sys
+report = json.load(open(sys.argv[1]))
+assert report["clicks"] == 0 and report["conversions"] == 0, report' "$TMP_DIR/user-overview.json"
+USER_GET_STATUS="$(curl -sS -o "$TMP_DIR/user-campaign-get.json" -w "%{http_code}" -H "Authorization: Bearer $AUTH_TOKEN" "$API_URL/api/campaigns/$CAMPAIGN_ID")"
+[[ "$USER_GET_STATUS" == "404" ]] || fail "user read another user's campaign: HTTP $USER_GET_STATUS"
+USER_ACT_AS_STATUS="$(curl -sS -o "$TMP_DIR/user-act-as.json" -w "%{http_code}" -H "Authorization: Bearer $AUTH_TOKEN" -H "X-TraffoFlex-Act-As: $(json_field "$TMP_DIR/auth-session.json" user.id)" "$API_URL/api/campaigns")"
+[[ "$USER_ACT_AS_STATUS" == "403" ]] || fail "user impersonation returned HTTP $USER_ACT_AS_STATUS"
+
+AUTH_TOKEN="$ADMIN_TOKEN"
+ACT_AS_USER_ID="$USER_ID"
+http_json \
+  POST \
+  "$API_URL/api/destinations" \
+  "$(printf '{"name":"User Destination %s","type":"url","url":"https://example.com/?cid={click_id}","manual_status":"active","health_status":"healthy"}' "$RUN_ID")" \
+  "$TMP_DIR/user-destination.json"
+USER_DESTINATION_ID="$(json_field "$TMP_DIR/user-destination.json" id)"
+http_json \
+  PUT \
+  "$API_URL/api/destinations/$USER_DESTINATION_ID" \
+  "$(printf '{"name":"Edited by Admin %s","type":"url","url":"https://example.com/?cid={click_id}","manual_status":"active","health_status":"healthy"}' "$RUN_ID")" \
+  "$TMP_DIR/user-destination-updated.json"
+ACT_AS_USER_ID=""
+AUTH_TOKEN="$(json_field "$TMP_DIR/user-session.json" token)"
+http_json GET "$API_URL/api/destinations/$USER_DESTINATION_ID" "" "$TMP_DIR/user-destination-read.json"
+python3 -c 'import json, sys
+item = json.load(open(sys.argv[1]))
+assert item["name"].startswith("Edited by Admin"), item' "$TMP_DIR/user-destination-read.json"
+AUTH_TOKEN="$ADMIN_TOKEN"
+ADMIN_GET_STATUS="$(curl -sS -o "$TMP_DIR/admin-own-destination.json" -w "%{http_code}" -H "Authorization: Bearer $AUTH_TOKEN" "$API_URL/api/destinations/$USER_DESTINATION_ID")"
+[[ "$ADMIN_GET_STATUS" == "404" ]] || fail "admin's own workspace exposed another user's data: HTTP $ADMIN_GET_STATUS"
+
+http_json \
+  GET \
+  "$TRAFFIC_URL/internal/click-audit/stats" \
+  "" \
+  "$TMP_DIR/click-audit.json"
+python3 -c 'import json, sys
+stats = json.load(open(sys.argv[1]))
+daily = stats["daily"]
+if daily.get("error") or daily.get("checked_at", "").startswith("0001-"):
+    raise SystemExit(f"click audit did not complete: {stats}")' "$TMP_DIR/click-audit.json"
 
 clickhouse_query \
   "SELECT count() AS errors FROM kafka_ingestion_errors FORMAT JSONEachRow" \
@@ -340,6 +457,7 @@ docker compose \
 for topic in \
   traffoflex.click_events \
   traffoflex.conversion_events \
+  traffoflex.attributed_conversion_events \
   traffoflex.destination_health_events \
   traffoflex.postback_log_events \
   traffoflex.trafficback_events
@@ -350,5 +468,35 @@ do
     "$TMP_DIR/topics.txt" \
     || fail "missing Redpanda topic $topic"
 done
+
+log "verifying duplicate-click audit"
+clickhouse_query \
+  "INSERT INTO click_events SELECT * FROM click_events WHERE click_id = '$CLICK_ID'"
+docker compose \
+  "${COMPOSE_ENV[@]}" \
+  "${COMPOSE_FILES[@]}" \
+  restart \
+  traffic-service
+wait_http "$TRAFFIC_URL/readyz" "ready" "traffic-service after restart"
+AUDIT_FOUND=0
+for _ in $(seq 1 30); do
+  http_json \
+    GET \
+    "$TRAFFIC_URL/internal/click-audit/stats" \
+    "" \
+    "$TMP_DIR/click-audit-duplicate.json"
+  if python3 -c 'import json, sys
+row = json.load(open(sys.argv[1]))["daily"]
+assert row["duplicate_events"] == 1, row
+assert abs(row["excess_cost"] - 1.25) < 0.000001, row
+assert row["conflicting_click_ids"] == 0, row' "$TMP_DIR/click-audit-duplicate.json" >/dev/null 2>&1; then
+    AUDIT_FOUND=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$AUDIT_FOUND" != "1" ]]; then
+  fail "duplicate-click audit did not report one repeated click: $(cat "$TMP_DIR/click-audit-duplicate.json")"
+fi
 
 log "smoke passed: click_id=$CLICK_ID conversion_id=$CONVERSION_ID campaign_id=$CAMPAIGN_ID"

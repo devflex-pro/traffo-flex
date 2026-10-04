@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -12,6 +13,18 @@ import (
 	"github.com/devflex/traffoflex/packages/go-shared/eventstream"
 	"github.com/devflex/traffoflex/packages/go-shared/httpx"
 )
+
+type routerTestSecrets struct{}
+
+func (routerTestSecrets) Secrets(
+	ctx context.Context,
+	networkID string,
+) ([]string, error) {
+	if networkID != "demo" && networkID != "api" {
+		return nil, nil
+	}
+	return []string{"test-secret"}, nil
+}
 
 func TestHealthAndReady(t *testing.T) {
 	router := NewRouter(testLogger())
@@ -107,54 +120,76 @@ func TestEventProducerStatsRoute(t *testing.T) {
 }
 
 func TestPostbackRoute(t *testing.T) {
-	router := NewRouter(testLogger())
+	router := NewRouterWithOptions(testLogger(), Options{PostbackSecrets: routerTestSecrets{}})
 
 	assertStatus(
 		t,
 		router,
 		stdhttp.MethodGet,
-		"/pb/demo?cid=clk_demo&tx=tx_1",
+		"/pb/demo?cid=clk_demo&tx=tx_1&secret=test-secret",
 		stdhttp.StatusOK,
 	)
 }
 
-func TestPostbackRouteRejectsDuplicate(t *testing.T) {
-	router := NewRouter(testLogger())
+func TestPostbackRouteRequiresConfiguredSecret(t *testing.T) {
+	router := NewRouterWithOptions(testLogger(), Options{PostbackSecrets: routerTestSecrets{}})
+	for _, path := range []string{
+		"/pb/demo?cid=clk_1&tx=tx_1",
+		"/pb/demo?cid=clk_1&tx=tx_1&secret=wrong",
+		"/pb/unknown?cid=clk_1&tx=tx_1&secret=test-secret",
+	} {
+		assertStatus(t, router, stdhttp.MethodGet, path, stdhttp.StatusUnauthorized)
+	}
+	if code := postJSONStatus(router, `{"click_id":"clk_1","transaction_id":"tx_1"}`); code != stdhttp.StatusUnauthorized {
+		t.Fatalf("POST without secret status = %d", code)
+	}
+}
+
+func postJSONStatus(router stdhttp.Handler, body string) int {
+	req := httptest.NewRequest(stdhttp.MethodPost, "/api/postbacks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	return rr.Code
+}
+
+func TestPostbackRouteAcceptsDuplicate(t *testing.T) {
+	router := NewRouterWithOptions(testLogger(), Options{PostbackSecrets: routerTestSecrets{}})
 
 	assertStatus(
 		t,
 		router,
 		stdhttp.MethodGet,
-		"/pb/demo?cid=clk_dup&tx=tx_dup",
+		"/pb/demo?cid=clk_dup&tx=tx_dup&secret=test-secret",
 		stdhttp.StatusOK,
 	)
 	assertStatus(
 		t,
 		router,
 		stdhttp.MethodGet,
-		"/pb/demo?cid=clk_dup&tx=tx_dup",
-		stdhttp.StatusConflict,
+		"/pb/demo?cid=clk_dup&tx=tx_dup&secret=test-secret",
+		stdhttp.StatusOK,
 	)
 }
 
 func TestPostbackRouteRejectsMissingTransaction(t *testing.T) {
-	router := NewRouter(testLogger())
+	router := NewRouterWithOptions(testLogger(), Options{PostbackSecrets: routerTestSecrets{}})
 
 	assertStatus(
 		t,
 		router,
 		stdhttp.MethodGet,
-		"/pb/demo?cid=clk_demo",
+		"/pb/demo?cid=clk_demo&secret=test-secret",
 		stdhttp.StatusBadRequest,
 	)
 }
 
 func TestPostbackPOSTJSON(t *testing.T) {
-	router := NewRouter(testLogger())
+	router := NewRouterWithOptions(testLogger(), Options{PostbackSecrets: routerTestSecrets{}})
 	req := httptest.NewRequest(
 		stdhttp.MethodPost,
 		"/api/postbacks",
-		strings.NewReader(`{"click_id":"clk_1","transaction_id":"tx_1"}`),
+		strings.NewReader(`{"click_id":"clk_1","transaction_id":"tx_1","secret":"test-secret"}`),
 	)
 	req.Header.Set(
 		"Content-Type",

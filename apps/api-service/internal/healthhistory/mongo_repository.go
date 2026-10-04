@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/devflex/traffoflex/apps/api-service/internal/scope"
+
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -28,6 +30,9 @@ func (r *MongoRepository) List(
 	error,
 ) {
 	filter := buildFilter(query)
+	if ownerID := scope.OwnerID(ctx); ownerID != "" {
+		filter["owner_id"] = ownerID
+	}
 	total, err := r.collection.CountDocuments(
 		ctx,
 		filter,

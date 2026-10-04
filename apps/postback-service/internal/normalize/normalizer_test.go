@@ -131,6 +131,53 @@ func TestSecretValidation(t *testing.T) {
 	}
 }
 
+func TestPostbackSecretSelectsOwner(t *testing.T) {
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/pb/net_1?cid=clk_1&tx=tx_1&secret=second",
+		nil,
+	)
+	conversion, err := FromGET(
+		req,
+		Template{
+			NetworkID: "net_1",
+			Credentials: []Credential{
+				{OwnerID: "usr_1", Secret: "first"},
+				{OwnerID: "usr_2", Secret: "second"},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversion.OwnerID != "usr_2" {
+		t.Fatalf(
+			"owner = %q, want usr_2",
+			conversion.OwnerID,
+		)
+	}
+}
+
+func TestAcceptedSecretIsNotPersistedInRawPayload(t *testing.T) {
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/pb/demo?cid=clk_1&tx=tx_1&secret=top-secret&token=top-secret&key=top-secret",
+		nil,
+	)
+	conversion, err := FromGET(
+		req,
+		Template{NetworkID: "demo", Secrets: []string{"top-secret"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"secret", "token", "key"} {
+		if _, found := conversion.RawPayload[key]; found {
+			t.Fatalf("raw payload contains %s", key)
+		}
+	}
+}
+
 func TestMissingRequiredFields(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodGet,

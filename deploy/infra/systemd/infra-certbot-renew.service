@@ -1,0 +1,10 @@
+[Unit]
+Description=Renew shared Let's Encrypt certificates with Docker Certbot
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/infra
+ExecStart=/usr/bin/docker compose run --rm certbot renew --quiet
+ExecStart=/usr/bin/docker compose exec -T nginx nginx -s reload

@@ -14,6 +14,7 @@ import (
 
 type State struct {
 	DestinationID string              `json:"destination_id"`
+	OwnerID       string              `json:"owner_id,omitempty"`
 	Previous      models.HealthStatus `json:"previous"`
 	Current       models.HealthStatus `json:"current"`
 	Error         string              `json:"error,omitempty"`

@@ -104,3 +104,35 @@ func (r *MemoryRepository) SaveUser(
 	r.byEmail[user.Email] = user.ID
 	return user, nil
 }
+
+func (r *MemoryRepository) RecordOTPFailure(
+	ctx context.Context,
+	id,
+	otpHash string,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	user, ok := r.users[id]
+	if !ok || user.OTPHash != otpHash || user.OTPFailedAttempts >= maxOTPAttempts {
+		return ErrOTPAttempts
+	}
+	user.OTPFailedAttempts++
+	r.users[id] = user
+	return nil
+}
+
+func (r *MemoryRepository) RevokeSessions(
+	ctx context.Context,
+	id string,
+	version int64,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	user, ok := r.users[id]
+	if !ok || user.SessionVersion != version {
+		return ErrInvalidToken
+	}
+	user.SessionVersion++
+	r.users[id] = user
+	return nil
+}

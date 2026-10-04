@@ -1,5 +1,9 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8070";
-let authToken = "";
+let actingAsUserID = "";
+
+export function setActingAsUserID(id: string | null) {
+  actingAsUserID = id ?? "";
+}
 
 export type Status = "active" | "paused" | "archived";
 export type HealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
@@ -73,6 +77,13 @@ export type Campaign = {
   traffic_source_id?: string;
   currency?: string;
   default_action?: string;
+  trafficback_config: TrafficbackConfig;
+};
+
+export type TrafficbackConfig = {
+  enabled: boolean;
+  url: string;
+  max_depth: number;
 };
 
 export type CampaignRequest = {
@@ -82,6 +93,7 @@ export type CampaignRequest = {
   traffic_source_id?: string;
   currency?: string;
   default_action?: string;
+  trafficback_config: TrafficbackConfig;
 };
 
 export type Destination = {
@@ -89,6 +101,7 @@ export type Destination = {
   name: string;
   type: string;
   url: string;
+  healthcheck_url?: string;
   manual_status: Status;
   health_status: HealthStatus;
   redirect: { mode: RedirectMode };
@@ -100,11 +113,21 @@ export type DestinationRequest = {
   name: string;
   type: string;
   url: string;
+  healthcheck_url?: string;
   manual_status: Status;
   health_status: HealthStatus;
   redirect: { mode: RedirectMode };
   schedule: DestinationSchedule;
   caps: DestinationCaps;
+};
+
+export type DestinationHealthcheckResult = {
+  destination_id: string;
+  status: HealthStatus;
+  error?: string;
+  probe_status_code?: number;
+  consecutive_failures: number;
+  consecutive_successes: number;
 };
 
 export type DestinationSchedule = {
@@ -234,7 +257,7 @@ export type OTPChallenge = {
 };
 
 export type AuthSession = {
-  token: string;
+  token?: string;
   user: AuthUser;
 };
 
@@ -283,10 +306,6 @@ export class ApiRequestError extends Error {
   }
 }
 
-export function setAuthToken(token: string | null) {
-  authToken = token ?? "";
-}
-
 async function request<T>(
   path: string,
   options: RequestInit = {}
@@ -295,9 +314,11 @@ async function request<T>(
     `${API_BASE_URL}${path}`,
     {
       ...options,
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        ...(options.method && options.method !== "GET" ? { "X-TraffoFlex-CSRF": "1" } : {}),
+        ...(actingAsUserID ? { "X-TraffoFlex-Act-As": actingAsUserID } : {}),
         ...(options.headers ?? {})
       }
     }
@@ -370,6 +391,7 @@ export const api = {
         })
       }
     ),
+  logout: () => request<void>("/api/auth/logout", { method: "POST" }),
   me: () => request<AuthUser>("/api/me"),
   users: (filters: ListFilters = {}) =>
     request<ListResponse<AuthUser>>(`/api/users${queryString(filters)}`),
@@ -479,8 +501,13 @@ export const api = {
         method: "DELETE"
       }
     ),
+  reloadTrafficCache: () =>
+    request<{ status: string }>(
+      "/api/internal/traffic/cache/reload",
+      { method: "POST" }
+    ),
   triggerDestinationHealthcheck: (id: string) =>
-    request<void>(
+    request<DestinationHealthcheckResult>(
       `/api/destinations/${id}/healthcheck`,
       {
         method: "POST"

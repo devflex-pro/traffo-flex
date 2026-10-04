@@ -8,10 +8,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/devflex/traffoflex/apps/traffic-service/internal/antirepeat"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/availability"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/cache"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/clicklog"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/distribution"
+	"github.com/devflex/traffoflex/apps/traffic-service/internal/eventqueue"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/requestctx"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/rules"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/trafficback"
@@ -31,6 +33,7 @@ type Handler struct {
 	clicklog     clicklog.Logger
 	tbSink       trafficevents.TrafficbackSink
 	availability *availability.Evaluator
+	antiRepeat   *antirepeat.Manager
 }
 
 func NewHandler(
@@ -40,6 +43,7 @@ func NewHandler(
 	logger clicklog.Logger,
 	tbSink trafficevents.TrafficbackSink,
 	evaluator *availability.Evaluator,
+	antiRepeat *antirepeat.Manager,
 ) *Handler {
 	if store == nil {
 		store = cache.NewDemoStore()
@@ -62,6 +66,7 @@ func NewHandler(
 		clicklog:     logger,
 		tbSink:       tbSink,
 		availability: evaluator,
+		antiRepeat:   antiRepeat,
 	}
 }
 
@@ -157,7 +162,7 @@ func (h *Handler) redirectCampaign(
 	clickID := ids.New("clk")
 	baseCtx := h.builder.Build(
 		r,
-		requestctx.Input{ClickID: clickID, CampaignID: campaign.Campaign.ID},
+		requestctx.Input{ClickID: clickID, CampaignID: campaign.Campaign.ID, OwnerID: campaign.Campaign.OwnerID},
 	)
 	stream, err := h.rules.MatchStream(
 		campaign.Streams,
@@ -168,10 +173,12 @@ func (h *Handler) redirectCampaign(
 			err,
 			rules.ErrNoMatchingStream,
 		) {
-			http.Error(
+			h.redirectTrafficback(
 				w,
-				"no matching stream",
-				http.StatusNotFound,
+				r,
+				campaign,
+				clickID,
+				models.TrafficbackNoMatchingStream,
 			)
 			return
 		}
@@ -183,26 +190,44 @@ func (h *Handler) redirectCampaign(
 		return
 	}
 
-	destination, err := h.selector.Select(
-		h.effectiveDistribution(stream.Distribution),
-		h.availableDestinations(
-			r.Context(),
-			stream.Distribution,
-			campaign.Destinations,
-			requestctx.Values(baseCtx),
-			clickID,
-		),
+	candidates := h.availableDestinations(
+		r.Context(),
+		stream.Distribution,
+		campaign.Destinations,
+		requestctx.Values(baseCtx),
 		clickID,
 	)
+	selectDestination := func(items []models.Destination) (models.Destination, error) {
+		return h.selector.Select(
+			h.effectiveDistribution(stream.Distribution),
+			items,
+			clickID,
+		)
+	}
+	var destination models.Destination
+	if stream.Distribution.UniquePolicy.Enabled && h.antiRepeat != nil {
+		destination, err = h.antiRepeat.SelectAndMark(
+			antirepeat.StreamKey{CampaignID: campaign.Campaign.ID, StreamID: stream.ID},
+			stream.Distribution.UniquePolicy,
+			requestctx.Values(baseCtx)[stream.Distribution.UniquePolicy.UserKey],
+			candidates,
+			time.Now().UTC(),
+			selectDestination,
+		)
+	} else {
+		destination, err = selectDestination(candidates)
+	}
 	if err != nil {
 		if errors.Is(
 			err,
 			distribution.ErrNoDestination,
-		) {
-			http.Error(
+		) || errors.Is(err, antirepeat.ErrHistoryUnavailable) || errors.Is(err, antirepeat.ErrHistoryExhausted) {
+			h.redirectTrafficback(
 				w,
-				"no destination available",
-				http.StatusServiceUnavailable,
+				r,
+				campaign,
+				clickID,
+				models.TrafficbackNoDestination,
 			)
 			return
 		}
@@ -216,6 +241,7 @@ func (h *Handler) redirectCampaign(
 
 	redirectCtx := h.builder.Build(r, requestctx.Input{
 		ClickID:       clickID,
+		OwnerID:       campaign.Campaign.OwnerID,
 		CampaignID:    campaign.Campaign.ID,
 		StreamID:      stream.ID,
 		DestinationID: destination.ID,
@@ -235,7 +261,7 @@ func (h *Handler) redirectCampaign(
 			redirectCtx,
 			time.Now().UTC(),
 		),
-	); err != nil {
+	); err != nil && !errors.Is(err, eventqueue.ErrFull) && !errors.Is(err, eventqueue.ErrWALFull) && !errors.Is(err, eventqueue.ErrWALWrite) {
 		h.log.Warn(
 			"failed to enqueue click log",
 			"error",
@@ -321,6 +347,28 @@ func (h *Handler) Trafficback(
 		return
 	}
 
+	h.redirectTrafficback(
+		w,
+		r,
+		campaign,
+		firstNonEmpty(
+			r.URL.Query().Get("click_id"),
+			ids.New("clk"),
+		),
+		models.TrafficbackReason(firstNonEmpty(
+			r.URL.Query().Get("reason"),
+			string(models.TrafficbackNoMatchingStream),
+		)),
+	)
+}
+
+func (h *Handler) redirectTrafficback(
+	w http.ResponseWriter,
+	r *http.Request,
+	campaign cache.CampaignConfig,
+	clickID string,
+	reason models.TrafficbackReason,
+) {
 	cfg := campaign.Campaign.TrafficbackConfig
 	if !cfg.Enabled || cfg.URL == "" {
 		http.Error(
@@ -359,19 +407,12 @@ func (h *Handler) Trafficback(
 		state,
 		"",
 	)
-	clickID := firstNonEmpty(
-		r.URL.Query().Get("click_id"),
-		ids.New("clk"),
-	)
 	ctx := h.builder.Build(
 		r,
-		requestctx.Input{ClickID: clickID, CampaignID: campaign.Campaign.ID},
+		requestctx.Input{ClickID: clickID, CampaignID: campaign.Campaign.ID, OwnerID: campaign.Campaign.OwnerID},
 	)
 	values := requestctx.Values(ctx)
-	values["trafficback_reason"] = firstNonEmpty(
-		r.URL.Query().Get("reason"),
-		string(models.TrafficbackNoMatchingStream),
-	)
+	values["trafficback_reason"] = string(reason)
 	values["trafficback_depth"] = intString(nextState.Depth)
 
 	targetURL := macros.Render(
@@ -381,14 +422,15 @@ func (h *Handler) Trafficback(
 	h.logTrafficback(
 		r,
 		clickID,
+		campaign.Campaign.OwnerID,
 		campaign.Campaign.ID,
-		models.TrafficbackReason(values["trafficback_reason"]),
+		reason,
 		nextState,
 	)
 	h.log.Info(
 		"trafficback redirect",
 		"campaign_slug",
-		slug,
+		campaign.Campaign.Slug,
 		"click_id",
 		clickID,
 		"depth",
@@ -407,6 +449,7 @@ func (h *Handler) Trafficback(
 func (h *Handler) logTrafficback(
 	r *http.Request,
 	clickID string,
+	ownerID string,
 	campaignID string,
 	reason models.TrafficbackReason,
 	state trafficback.State,
@@ -418,13 +461,14 @@ func (h *Handler) logTrafficback(
 		r.Context(),
 		models.TrafficbackEvent{
 			ClickID:             clickID,
+			OwnerID:             ownerID,
 			CampaignID:          campaignID,
 			Reason:              reason,
 			Depth:               state.Depth,
 			VisitedDestinations: state.VisitedDestinations,
 			CreatedAt:           time.Now().UTC(),
 		},
-	); err != nil {
+	); err != nil && !errors.Is(err, eventqueue.ErrFull) {
 		h.log.Warn(
 			"failed to write trafficback event",
 			"error",

@@ -34,6 +34,7 @@ func (l *KafkaLogger) Log(
 		event.PostbackID,
 		postbackLogRow{
 			CreatedAt:     eventstream.ClickHouseDateTime(event.CreatedAt),
+			OwnerID:       event.OwnerID,
 			PostbackID:    event.PostbackID,
 			NetworkID:     event.NetworkID,
 			ClickID:       event.ClickID,
@@ -47,6 +48,7 @@ func (l *KafkaLogger) Log(
 
 type postbackLogRow struct {
 	CreatedAt     string `json:"created_at"`
+	OwnerID       string `json:"owner_id"`
 	PostbackID    string `json:"postback_id"`
 	NetworkID     string `json:"network_id"`
 	ClickID       string `json:"click_id"`

@@ -35,6 +35,7 @@ func (s *KafkaSink) Write(
 		conversionRow{
 			CreatedAt:     eventstream.ClickHouseDateTime(event.CreatedAt),
 			UpdatedAt:     eventstream.ClickHouseDateTime(event.UpdatedAt),
+			OwnerID:       event.OwnerID,
 			ConversionID:  event.ConversionID,
 			ClickID:       event.ClickID,
 			TransactionID: event.TransactionID,
@@ -56,6 +57,7 @@ func (s *KafkaSink) Write(
 type conversionRow struct {
 	CreatedAt     string  `json:"created_at"`
 	UpdatedAt     string  `json:"updated_at"`
+	OwnerID       string  `json:"owner_id"`
 	ConversionID  string  `json:"conversion_id"`
 	ClickID       string  `json:"click_id"`
 	TransactionID string  `json:"transaction_id"`

@@ -163,6 +163,7 @@ services:
         for topic in \
           traffoflex.click_events \
           traffoflex.conversion_events \
+          traffoflex.attributed_conversion_events \
           traffoflex.postback_log_events \
           traffoflex.trafficback_events \
           traffoflex.destination_health_events
@@ -267,6 +268,10 @@ services:
     env_file:
       - path: ../.env
         required: false
+    volumes:
+      - traffic_bloom_data:/data/bloom
+      - traffic_cache_data:/data/cache
+      - traffic_click_wal_data:/data/click-wal
     ports:
       - "8080:8080"
     depends_on:
@@ -304,16 +309,6 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      redpanda-0:
-        condition: service_healthy
-      redpanda-1:
-        condition: service_healthy
-      redpanda-2:
-        condition: service_healthy
-      redpanda-init:
-        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD-SHELL
@@ -345,6 +340,9 @@ services:
       start_period: 10s
 
 volumes:
+  traffic_bloom_data:
+  traffic_cache_data:
+  traffic_click_wal_data:
   redpanda_0_data:
   redpanda_1_data:
   redpanda_2_data:

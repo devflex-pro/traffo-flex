@@ -16,7 +16,6 @@ func TestLoadDefaultsAreValid(t *testing.T) {
 func TestValidateRejectsInvalidURLs(t *testing.T) {
 	cfg := Load()
 	cfg.MongoURI = "localhost:27017"
-	cfg.ClickHouseHTTPURL = "clickhouse:8123"
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")

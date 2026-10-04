@@ -119,6 +119,59 @@ func (r *MongoRepository) SaveUser(
 	return user, nil
 }
 
+func (r *MongoRepository) RecordOTPFailure(
+	ctx context.Context,
+	id,
+	otpHash string,
+) error {
+	result, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{
+			"id":       id,
+			"otp_hash": otpHash,
+			"$expr": bson.M{"$lt": bson.A{
+				bson.M{"$ifNull": bson.A{"$otp_failed_attempts", 0}},
+				maxOTPAttempts,
+			}},
+		},
+		bson.M{"$inc": bson.M{"otp_failed_attempts": 1}},
+	)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return ErrOTPAttempts
+	}
+	return nil
+}
+
+func (r *MongoRepository) RevokeSessions(
+	ctx context.Context,
+	id string,
+	version int64,
+) error {
+	filter := bson.M{"id": id, "session_version": version}
+	if version == 0 {
+		filter["$or"] = bson.A{
+			bson.M{"session_version": bson.M{"$exists": false}},
+			bson.M{"session_version": 0},
+		}
+		delete(filter, "session_version")
+	}
+	result, err := r.collection.UpdateOne(
+		ctx,
+		filter,
+		bson.M{"$inc": bson.M{"session_version": 1}},
+	)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return ErrInvalidToken
+	}
+	return nil
+}
+
 func (r *MongoRepository) findOne(
 	ctx context.Context,
 	filter bson.M,
@@ -176,6 +229,8 @@ func encodeUser(user User) (
 	doc["otp_hash"] = user.OTPHash
 	doc["otp_expires_at"] = user.OTPExpiresAt
 	doc["otp_requested_at"] = user.OTPRequestedAt
+	doc["otp_failed_attempts"] = user.OTPFailedAttempts
+	doc["session_version"] = user.SessionVersion
 	return doc, nil
 }
 
@@ -206,6 +261,12 @@ func decodeUser(doc bson.M) (
 	}
 	if value, ok := doc["otp_requested_at"].(bson.DateTime); ok {
 		user.OTPRequestedAt = value.Time()
+	}
+	if value, ok := doc["otp_failed_attempts"].(int32); ok {
+		user.OTPFailedAttempts = int(value)
+	}
+	if value, ok := doc["session_version"].(int64); ok {
+		user.SessionVersion = value
 	}
 	return user, nil
 }

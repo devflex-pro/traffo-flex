@@ -33,25 +33,39 @@ func (s *KafkaTrafficbackSink) WriteTrafficback(
 	ctx context.Context,
 	event models.TrafficbackEvent,
 ) error {
-	return s.producer.WriteJSON(
+	return s.WriteBatch(
 		ctx,
-		s.topic,
-		event.ClickID,
-		trafficbackRow{
-			CreatedAt:           eventstream.ClickHouseDateTime(event.CreatedAt),
-			ClickID:             event.ClickID,
-			CampaignID:          event.CampaignID,
-			StreamID:            event.StreamID,
-			DestinationID:       event.DestinationID,
-			Reason:              string(event.Reason),
-			Depth:               uint8(event.Depth),
-			VisitedDestinations: event.VisitedDestinations,
-		},
+		[]models.TrafficbackEvent{event},
 	)
+}
+
+func (s *KafkaTrafficbackSink) WriteBatch(
+	ctx context.Context,
+	events []models.TrafficbackEvent,
+) error {
+	items := make([]eventstream.JSONEvent, 0, len(events))
+	for _, event := range events {
+		items = append(items, eventstream.JSONEvent{
+			Key: event.ClickID,
+			Value: trafficbackRow{
+				CreatedAt:           eventstream.ClickHouseDateTime(event.CreatedAt),
+				OwnerID:             event.OwnerID,
+				ClickID:             event.ClickID,
+				CampaignID:          event.CampaignID,
+				StreamID:            event.StreamID,
+				DestinationID:       event.DestinationID,
+				Reason:              string(event.Reason),
+				Depth:               uint8(event.Depth),
+				VisitedDestinations: event.VisitedDestinations,
+			},
+		})
+	}
+	return s.producer.WriteJSONBatch(ctx, s.topic, items)
 }
 
 type trafficbackRow struct {
 	CreatedAt           string   `json:"created_at"`
+	OwnerID             string   `json:"owner_id"`
 	ClickID             string   `json:"click_id"`
 	CampaignID          string   `json:"campaign_id"`
 	StreamID            string   `json:"stream_id"`

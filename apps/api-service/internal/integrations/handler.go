@@ -1,27 +1,35 @@
 package integrations
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 
+	"github.com/devflex/traffoflex/apps/api-service/internal/destinations"
 	"github.com/devflex/traffoflex/packages/go-shared/httpx"
 	"github.com/go-chi/chi/v5"
 )
 
 type Handler struct {
-	log    *slog.Logger
-	client Client
+	log          *slog.Logger
+	client       Client
+	destinations destinations.Repository
 }
 
 func NewHandler(
 	log *slog.Logger,
 	client Client,
+	destinationRepo ...destinations.Repository,
 ) *Handler {
 	if client == nil {
 		client = NoopClient{}
 	}
-	return &Handler{log: log, client: client}
+	h := &Handler{log: log, client: client}
+	if len(destinationRepo) > 0 {
+		h.destinations = destinationRepo[0]
+	}
+	return h
 }
 
 func (h *Handler) ReloadTrafficCache(
@@ -51,10 +59,31 @@ func (h *Handler) TriggerDestinationHealthcheck(
 		r,
 		"id",
 	)
-	if err := h.client.TriggerDestinationHealthcheck(
+	if h.destinations != nil {
+		if _, err := h.destinations.Get(
+			r.Context(),
+			destinationID,
+		); err != nil {
+			status := http.StatusInternalServerError
+			message := "failed to check destination access"
+			if errors.Is(err, destinations.ErrNotFound) {
+				status = http.StatusNotFound
+				message = "destination not found"
+			}
+			h.respondError(
+				w,
+				status,
+				message,
+				err,
+			)
+			return
+		}
+	}
+	result, err := h.client.TriggerDestinationHealthcheck(
 		r.Context(),
 		destinationID,
-	); err != nil {
+	)
+	if err != nil {
 		h.respondError(
 			w,
 			http.StatusBadGateway,
@@ -63,10 +92,9 @@ func (h *Handler) TriggerDestinationHealthcheck(
 		)
 		return
 	}
-	h.respondAccepted(
-		w,
-		"destination healthcheck triggered",
-	)
+	if err := httpx.JSON(w, http.StatusAccepted, result); err != nil {
+		h.log.Error("failed to write healthcheck result", "error", err)
+	}
 }
 
 func (h *Handler) TestPostback(

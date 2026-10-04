@@ -156,6 +156,7 @@ const (
 )
 
 type Query struct {
+	OwnerID       string
 	From          time.Time
 	To            time.Time
 	Timezone      string

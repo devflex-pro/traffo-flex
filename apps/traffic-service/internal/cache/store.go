@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"time"
 
@@ -49,12 +50,17 @@ func (l StaticLoader) Load(ctx context.Context) (
 }
 
 type Store struct {
-	mu         sync.RWMutex
-	loader     Loader
-	bySlug     map[string]CampaignConfig
-	byPublicID map[string]CampaignConfig
-	byToken    map[string]CampaignConfig
-	reloadedAt time.Time
+	mu               sync.RWMutex
+	reloadMu         sync.Mutex
+	loader           Loader
+	snapshot         *SnapshotFile
+	bySlug           map[string]CampaignConfig
+	byPublicID       map[string]CampaignConfig
+	byToken          map[string]CampaignConfig
+	reloadedAt       time.Time
+	lastMongoSuccess time.Time
+	lastMongoError   string
+	source           string
 }
 
 func NewStore(loader Loader) *Store {
@@ -69,6 +75,12 @@ func NewStore(loader Loader) *Store {
 	}
 }
 
+func NewPersistentStore(loader Loader, snapshot *SnapshotFile) *Store {
+	store := NewStore(loader)
+	store.snapshot = snapshot
+	return store
+}
+
 func NewDemoStore() *Store {
 	store := NewStore(StaticLoader{Campaigns: DemoCampaigns()})
 	if err := store.Reload(context.Background()); err != nil {
@@ -78,12 +90,42 @@ func NewDemoStore() *Store {
 }
 
 func (s *Store) Reload(ctx context.Context) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	campaigns, err := s.loader.Load(ctx)
+	if err != nil {
+		s.recordMongoError(err)
+		return err
+	}
+	loadedAt := time.Now().UTC()
+	if s.snapshot != nil {
+		if err := s.snapshot.Save(campaigns, loadedAt); err != nil {
+			s.recordMongoError(err)
+			return err
+		}
+	}
+	s.install(campaigns, loadedAt, "mongo")
+	return nil
+}
+
+func (s *Store) Restore() error {
+	if s.snapshot == nil {
+		return ErrNoRoutingSnapshot
+	}
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	campaigns, savedAt, err := s.snapshot.Load()
 	if err != nil {
 		return err
 	}
+	if len(campaigns) == 0 {
+		return errors.New("routing snapshot has no active campaigns")
+	}
+	s.install(campaigns, savedAt, "snapshot")
+	return nil
+}
 
-	loadedAt := time.Now().UTC()
+func (s *Store) install(campaigns []CampaignConfig, loadedAt time.Time, source string) {
 	nextBySlug := make(
 		map[string]CampaignConfig,
 		len(campaigns),
@@ -113,6 +155,45 @@ func (s *Store) Reload(ctx context.Context) error {
 	s.byPublicID = nextByPublicID
 	s.byToken = nextByToken
 	s.reloadedAt = loadedAt
+	s.source = source
+	if source == "mongo" {
+		s.lastMongoSuccess = loadedAt
+		s.lastMongoError = ""
+	}
+}
+
+func (s *Store) recordMongoError(err error) {
+	s.mu.Lock()
+	s.lastMongoError = err.Error()
+	s.mu.Unlock()
+}
+
+type Status struct {
+	Source           string    `json:"source"`
+	Campaigns        int       `json:"campaigns"`
+	LoadedAt         time.Time `json:"loaded_at,omitempty"`
+	LastMongoSuccess time.Time `json:"last_mongo_success,omitempty"`
+	LastMongoError   string    `json:"last_mongo_error,omitempty"`
+}
+
+func (s *Store) Status() Status {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return Status{
+		Source:           s.source,
+		Campaigns:        len(s.bySlug),
+		LoadedAt:         s.reloadedAt,
+		LastMongoSuccess: s.lastMongoSuccess,
+		LastMongoError:   s.lastMongoError,
+	}
+}
+
+func (s *Store) Ready(r *http.Request) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.bySlug) == 0 {
+		return errors.New("no active routing campaigns are loaded")
+	}
 	return nil
 }
 
@@ -196,6 +277,19 @@ func (s *Store) DestinationIDs() []string {
 	return ids
 }
 
+func (s *Store) SnapshotCampaigns() []CampaignConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	campaigns := make([]CampaignConfig, 0, len(s.bySlug))
+	for _, campaign := range s.bySlug {
+		copyOfCampaign := campaign
+		copyOfCampaign.Streams = append([]models.Stream(nil), campaign.Streams...)
+		copyOfCampaign.Destinations = append([]models.Destination(nil), campaign.Destinations...)
+		campaigns = append(campaigns, copyOfCampaign)
+	}
+	return campaigns
+}
+
 func (s *Store) UpdateDestinationHealth(
 	id string,
 	status models.HealthStatus,
@@ -274,7 +368,7 @@ func DemoCampaigns() []CampaignConfig {
 				Status:      models.StatusActive,
 				TrafficbackConfig: models.TrafficbackConfig{
 					Enabled:  true,
-					URL:      "https://example.com/trafficback?click_id={click_id}&reason={trafficback_reason}&depth={trafficback_depth}",
+					URL:      "https://example.com/trafficback?click_id={click_id}&reason={trafficback_reason}&trafficback_depth={trafficback_depth}",
 					MaxDepth: 3,
 				},
 				CreatedAt: now,

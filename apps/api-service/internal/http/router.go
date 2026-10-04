@@ -75,12 +75,14 @@ func NewRouterWithConfig(
 					cfg,
 				),
 				auth.Config{
-					AdminEmail:   cfg.AuthAdminEmail,
-					JWTSecret:    cfg.AuthJWTSecret,
-					OTPTTL:       time.Duration(cfg.AuthOTPTTLSeconds) * time.Second,
-					OTPRateLimit: time.Duration(cfg.AuthOTPRateLimit) * time.Minute,
-					SessionTTL:   time.Duration(cfg.AuthSessionTTL) * time.Hour,
-					DevReturnOTP: cfg.AuthDevReturnOTP,
+					AdminEmail:    cfg.AuthAdminEmail,
+					JWTSecret:     cfg.AuthJWTSecret,
+					OTPTTL:        time.Duration(cfg.AuthOTPTTLSeconds) * time.Second,
+					OTPRateLimit:  time.Duration(cfg.AuthOTPRateLimit) * time.Minute,
+					SessionTTL:    time.Duration(cfg.AuthSessionTTL) * time.Hour,
+					DevReturnOTP:  cfg.AuthDevReturnOTP,
+					CookieSecure:  !cfg.LocalAuthEnv(),
+					AllowedOrigin: cfg.AdminFrontendOrigin,
 				},
 			),
 		},
@@ -129,6 +131,7 @@ func NewRouterWithOptions(
 	integrationHandler := integrations.NewHandler(
 		log,
 		opts.IntegrationClient,
+		opts.DestinationRepository,
 	)
 	healthHistoryHandler := healthhistory.NewHandler(
 		log,
@@ -203,20 +206,25 @@ func NewRouterWithOptions(
 				)
 				r.Group(func(r chi.Router) {
 					r.Use(authHandler.Middleware)
-					registerProtectedRoutes(
-						r,
-						authHandler,
-						campaignHandler,
-						destinationHandler,
-						integrationHandler,
-						healthHistoryHandler,
-						networkHandler,
-						postbackTemplateHandler,
-						postbackLogHandler,
-						reportHandler,
-						streamHandler,
-						sourceHandler,
-					)
+					r.Get("/me", authHandler.Me)
+					r.Post("/auth/logout", authHandler.Logout)
+					r.Group(func(r chi.Router) {
+						r.Use(authHandler.Workspace)
+						registerProtectedRoutes(
+							r,
+							authHandler,
+							campaignHandler,
+							destinationHandler,
+							integrationHandler,
+							healthHistoryHandler,
+							networkHandler,
+							postbackTemplateHandler,
+							postbackLogHandler,
+							reportHandler,
+							streamHandler,
+							sourceHandler,
+						)
+					})
 				})
 				return
 			}
@@ -255,10 +263,6 @@ func registerProtectedRoutes(
 	streamHandler *streams.Handler,
 	sourceHandler *trafficsources.Handler,
 ) {
-	r.Get(
-		"/me",
-		authHandler.Me,
-	)
 	r.Get(
 		"/users",
 		authHandler.AdminOnly(http.HandlerFunc(authHandler.ListUsers)).ServeHTTP,
@@ -445,6 +449,6 @@ func registerProtectedRoutes(
 	)
 	r.Get(
 		"/reports/ingestion-errors",
-		reportHandler.IngestionErrors,
+		authHandler.AdminOnly(http.HandlerFunc(reportHandler.IngestionErrors)).ServeHTTP,
 	)
 }

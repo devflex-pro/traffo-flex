@@ -24,6 +24,8 @@ seed_mongo() {
 const now = new Date();
 const ago = (hours) => new Date(now.getTime() - hours * 60 * 60 * 1000);
 const teamID = "team_demo";
+const existingAdmin = db.users.findOne({ email: "admin@example.com" });
+const ownerID = existingAdmin?.id ?? "usr_demo_admin";
 
 const campaignIDs = [
   "cmp_demo_finance",
@@ -82,9 +84,7 @@ db.postback_templates.deleteMany({ id: { $in: templateIDs } });
 db.destination_health.deleteMany({ destination_id: { $in: destinationIDs } });
 db.destination_health_history.deleteMany({ demo: true });
 db.postback_logs.deleteMany({ demo: true });
-db.users.deleteOne({ id: "usr_demo_admin" });
-
-db.users.insertOne({
+if (!existingAdmin) db.users.insertOne({
   _id: "usr_demo_admin",
   id: "usr_demo_admin",
   email: "admin@example.com",
@@ -621,6 +621,20 @@ for (let i = 0; i < 240; i += 1) {
 }
 db.postback_logs.insertMany(postbackLogs);
 
+for (const [collection, filter] of [
+  ["campaigns", { id: /^cmp_demo_/ }],
+  ["streams", { id: /^str_demo_/ }],
+  ["destinations", { id: /^dst_demo_/ }],
+  ["traffic_sources", { id: { $in: sourceIDs } }],
+  ["affiliate_networks", { id: { $in: networkIDs } }],
+  ["postback_templates", { id: { $in: templateIDs } }],
+  ["destination_health", { destination_id: { $in: destinationIDs } }],
+  ["destination_health_history", { demo: true }],
+  ["postback_logs", { demo: true }],
+]) {
+  db.getCollection(collection).updateMany(filter, { $set: { owner_id: ownerID } });
+}
+
 print("MongoDB demo seed completed");
 JS
 }
@@ -642,15 +656,19 @@ ensure_clickhouse_schema() {
 }
 
 seed_clickhouse() {
-  docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client \
+  sed "s/__DEMO_OWNER_ID__/$DEMO_OWNER_ID/g" <<'SQL' | docker exec -i "$CLICKHOUSE_CONTAINER" clickhouse-client \
     --user "$CLICKHOUSE_USER" \
     --password "$CLICKHOUSE_PASSWORD" \
     --database "$CLICKHOUSE_DATABASE" \
-    --multiquery <<'SQL'
+    --multiquery
 SET mutations_sync = 1;
 
 ALTER TABLE click_events DELETE WHERE startsWith(campaign_id, 'cmp_demo_') OR startsWith(click_id, 'clk_demo_');
+ALTER TABLE click_attribution_lookup DELETE WHERE startsWith(click_id, 'clk_demo_');
+ALTER TABLE click_stats_1m DELETE WHERE startsWith(campaign_id, 'cmp_demo_');
+ALTER TABLE click_stats_1h DELETE WHERE startsWith(campaign_id, 'cmp_demo_');
 ALTER TABLE conversion_events DELETE WHERE startsWith(campaign_id, 'cmp_demo_') OR startsWith(click_id, 'clk_demo_') OR startsWith(conversion_id, 'cnv_demo_');
+ALTER TABLE attributed_conversion_events DELETE WHERE startsWith(conversion_id, 'cnv_demo_');
 ALTER TABLE postback_log_events DELETE WHERE startsWith(postback_id, 'pbe_demo_') OR startsWith(click_id, 'clk_demo_');
 ALTER TABLE trafficback_events DELETE WHERE startsWith(campaign_id, 'cmp_demo_') OR startsWith(click_id, 'tb_demo_');
 ALTER TABLE destination_health_events DELETE WHERE startsWith(destination_id, 'dst_demo_');
@@ -661,6 +679,7 @@ WITH
   if(campaign_idx + 1 < 10, concat('0', toString(campaign_idx + 1)), toString(campaign_idx + 1)) AS suffix
 SELECT
   now() - toIntervalMinute((number % 10080) + 15) AS created_at,
+  '__DEMO_OWNER_ID__' AS owner_id,
   concat('clk_demo_', toString(number)) AS click_id,
   multiIf(campaign_idx = 0, 'cmp_demo_finance', campaign_idx = 1, 'cmp_demo_mobile', campaign_idx = 2, 'cmp_demo_ecommerce', campaign_idx = 3, 'cmp_demo_sweepstakes', concat('cmp_demo_case_', suffix)) AS campaign_id,
   multiIf(campaign_idx = 0, 'str_demo_finance_us_mobile', campaign_idx = 1, 'str_demo_mobile_android', campaign_idx = 2, 'str_demo_ecommerce_retarget', campaign_idx = 3, 'str_demo_sweepstakes_global', concat('str_demo_case_', suffix)) AS stream_id,
@@ -710,6 +729,7 @@ WITH
 SELECT
   now() - toIntervalMinute((number * 17 % 10080) + 10) AS created_at,
   now() - toIntervalMinute((number * 17 % 10080) + 5) AS updated_at,
+  '__DEMO_OWNER_ID__' AS owner_id,
   concat('cnv_demo_', toString(number)) AS conversion_id,
   concat('clk_demo_', toString(number * 5)) AS click_id,
   concat('tx_demo_', toString(10000 + number)) AS transaction_id,
@@ -726,9 +746,16 @@ SELECT
   concat('{"demo":"true","transaction_id":"tx_demo_', toString(10000 + number), '"}') AS raw_payload
 FROM numbers(1800);
 
+INSERT INTO attributed_conversion_events
+SELECT created_at, updated_at AS attributed_at, owner_id, conversion_id,
+       click_id, campaign_id, stream_id, destination_id, source_id, payout
+FROM conversion_events
+WHERE owner_id = '__DEMO_OWNER_ID__' AND startsWith(conversion_id, 'cnv_demo_');
+
 INSERT INTO postback_log_events
 SELECT
   now() - toIntervalMinute((number * 19 % 10080) + 3) AS created_at,
+  '__DEMO_OWNER_ID__' AS owner_id,
   concat('pbe_demo_', toString(number)) AS postback_id,
   multiIf(number % 3 = 0, 'net_demo_adcombo', number % 3 = 1, 'net_demo_clickdealer', 'net_demo_inhouse') AS network_id,
   concat('clk_demo_', toString(number * 5)) AS click_id,
@@ -741,6 +768,7 @@ FROM numbers(140);
 INSERT INTO trafficback_events
 SELECT
   now() - toIntervalMinute((number * 37 % 10080) + 7) AS created_at,
+  '__DEMO_OWNER_ID__' AS owner_id,
   concat('tb_demo_', toString(number)) AS click_id,
   multiIf(number % 3 = 0, 'cmp_demo_finance', number % 3 = 1, 'cmp_demo_ecommerce', 'cmp_demo_sweepstakes') AS campaign_id,
   multiIf(number % 3 = 0, 'str_demo_finance_us_mobile', number % 3 = 1, 'str_demo_ecommerce_retarget', 'str_demo_sweepstakes_global') AS stream_id,
@@ -753,6 +781,7 @@ FROM numbers(75);
 INSERT INTO destination_health_events
 SELECT
   now() - toIntervalMinute((number * 53 % 10080) + 11) AS created_at,
+  '__DEMO_OWNER_ID__' AS owner_id,
   multiIf(number % 8 = 0, 'dst_demo_credit_cards', number % 8 = 1, 'dst_demo_invest_landing', number % 8 = 2, 'dst_demo_android_offer', number % 8 = 3, 'dst_demo_ios_offer', number % 8 = 4, 'dst_demo_shop_sale', number % 8 = 5, 'dst_demo_coupon_fallback', number % 8 = 6, 'dst_demo_sweeps_main', 'dst_demo_sweeps_backup') AS destination_id,
   multiIf(number % 5 = 0, 'unknown', number % 5 = 1, 'healthy', number % 5 = 2, 'degraded', number % 5 = 3, 'healthy', 'unhealthy') AS previous,
   multiIf(number % 5 = 0, 'healthy', number % 5 = 1, 'degraded', number % 5 = 2, 'healthy', number % 5 = 3, 'unhealthy', 'healthy') AS current,
@@ -764,6 +793,11 @@ SQL
 require_container "$MONGO_CONTAINER"
 require_container "$CLICKHOUSE_CONTAINER"
 seed_mongo
+DEMO_OWNER_ID="$(docker exec -i "$MONGO_CONTAINER" mongosh --quiet "$MONGO_DATABASE" --eval 'print(db.users.findOne({ email: "admin@example.com" }).id)' | tr -d '\r')"
+if [[ ! "$DEMO_OWNER_ID" =~ ^usr_[A-Za-z0-9_]+$ ]]; then
+  echo "unexpected demo owner ID: $DEMO_OWNER_ID" >&2
+  exit 1
+fi
 ensure_clickhouse_schema
 seed_clickhouse
 

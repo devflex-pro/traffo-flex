@@ -1,0 +1,245 @@
+name: traffoflex
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  redpanda-0:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.1.8
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --smp
+      - "2"
+      - --memory
+      - 2G
+      - --reserve-memory
+      - 256M
+      - --overprovisioned=false
+      - --unsafe-bypass-fsync=false
+      - --node-id
+      - "0"
+      - --kafka-addr
+      - 0.0.0.0:9092
+      - --advertise-kafka-addr
+      - redpanda-0:9092
+      - --rpc-addr
+      - redpanda-0:33145
+      - --advertise-rpc-addr
+      - redpanda-0:33145
+      - --set
+      - redpanda.auto_create_topics_enabled=false
+      - --set
+      - redpanda.developer_mode=false
+      - --set
+      - redpanda.write_caching_default=false
+      - --set
+      - redpanda.storage_min_free_bytes=5368709120
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    networks: [internal]
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers redpanda-0:9092 >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *logging
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.1.8
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for topic in traffoflex.click_events traffoflex.conversion_events traffoflex.attributed_conversion_events traffoflex.postback_log_events traffoflex.trafficback_events traffoflex.destination_health_events; do
+          if rpk topic describe "$$topic" -X brokers=redpanda-0:9092 >/dev/null 2>&1; then
+            echo "topic $$topic already exists"
+          else
+            rpk topic create "$$topic" -X brokers=redpanda-0:9092 -p 3 -r 1 -c retention.ms=604800000 -c cleanup.policy=delete
+          fi
+        done
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+    networks: [internal]
+    logging: *logging
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["mongod", "--wiredTigerCacheSizeGB", "2"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:?Set a MongoDB root user}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Set a MongoDB root password}
+      MONGO_INITDB_DATABASE: traffoflex
+      MONGO_APP_USER: ${MONGO_APP_USER:?Set a MongoDB application user}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Set a MongoDB application password}
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo/init/001_indexes.js:/docker-entrypoint-initdb.d/001_indexes.js:ro
+      - ./mongo/prod-init/002_app_user.js:/docker-entrypoint-initdb.d/002_app_user.js:ro
+    networks: [internal]
+    mem_limit: 3g
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.adminCommand({ping:1}).ok' | grep -qx 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *logging
+
+  clickhouse:
+    image: ghcr.io/devflex-pro/traffo-flex-clickhouse:${IMAGE_TAG:?Set IMAGE_TAG to a published release tag}
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:?Set a ClickHouse user}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set a ClickHouse password}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks: [internal]
+    mem_limit: 8g
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" --query 'SELECT countIf(is_readonly) FROM system.replicas' | grep -qx 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 90s
+    logging: *logging
+
+  api-service:
+    image: ghcr.io/devflex-pro/traffo-flex-api-service:${IMAGE_TAG:?Set IMAGE_TAG}
+    restart: unless-stopped
+    environment: &app_env
+      MONGO_URI: mongodb://${MONGO_APP_USER:?Set MONGO_APP_USER}:${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD}@mongo:27017/traffoflex?authSource=traffoflex
+      MONGO_DATABASE: traffoflex
+      CLICKHOUSE_HTTP_URL: http://${CLICKHOUSE_USER:?Set CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD}@clickhouse:8123?database=traffoflex
+      EVENT_BROKERS: redpanda-0:9092
+      TRAFFIC_SERVICE_URL: http://traffic-service:8080
+      POSTBACK_SERVICE_URL: http://postback-service:8081
+      ADMIN_FRONTEND_ORIGIN: https://${APP_DOMAIN:?Set APP_DOMAIN}
+      AUTH_ENV: production
+      AUTH_DEV_RETURN_OTP: "false"
+      AUTH_ADMIN_EMAIL: ${AUTH_ADMIN_EMAIL:?Set the production admin email}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?Set a unique JWT secret}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:?Set a verified sender}
+      AUTH_RESEND_API_KEY: ${AUTH_RESEND_API_KEY:?Set the production Resend API key}
+    depends_on:
+      mongo:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    networks:
+      internal: {}
+      proxy:
+        aliases: [traffoflex-api]
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8070/readyz | grep -q ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging: *logging
+
+  traffic-service:
+    image: ghcr.io/devflex-pro/traffo-flex-traffic-service:${IMAGE_TAG:?Set IMAGE_TAG}
+    restart: unless-stopped
+    environment:
+      MONGO_URI: mongodb://${MONGO_APP_USER:?Set MONGO_APP_USER}:${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD}@mongo:27017/traffoflex?authSource=traffoflex
+      MONGO_DATABASE: traffoflex
+      CLICKHOUSE_HTTP_URL: http://${CLICKHOUSE_USER:?Set CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD}@clickhouse:8123?database=traffoflex
+      EVENT_BROKERS: redpanda-0:9092
+      TRUSTED_PROXY_CIDRS: ${NGINX_PROXY_CIDR:?Set the Nginx address as a single-host CIDR}
+      CLICK_WAL_PATH: /data/click-wal
+      CLICK_WAL_MAX_MB: "2048"
+      CLICK_WAL_SEGMENT_MB: "16"
+      BLOOM_SNAPSHOT_PATH: /data/bloom/snapshot.gob
+      ROUTING_SNAPSHOT_PATH: /data/cache/campaigns.json
+      EVENT_WRITE_FAILURE_POLICY: fail_open
+    volumes:
+      - traffic_bloom_data:/data/bloom
+      - traffic_cache_data:/data/cache
+      - traffic_click_wal_data:/data/click-wal
+    networks:
+      internal: {}
+      proxy:
+        aliases: [traffoflex-traffic]
+    mem_limit: 2g
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz | grep -q ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *logging
+
+  postback-service:
+    image: ghcr.io/devflex-pro/traffo-flex-postback-service:${IMAGE_TAG:?Set IMAGE_TAG}
+    restart: unless-stopped
+    environment:
+      MONGO_URI: mongodb://${MONGO_APP_USER:?Set MONGO_APP_USER}:${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD}@mongo:27017/traffoflex?authSource=traffoflex
+      MONGO_DATABASE: traffoflex
+      CLICKHOUSE_HTTP_URL: http://${CLICKHOUSE_USER:?Set CLICKHOUSE_USER}:${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD}@clickhouse:8123?database=traffoflex
+      EVENT_BROKERS: redpanda-0:9092
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      internal: {}
+      proxy:
+        aliases: [traffoflex-postback]
+    mem_limit: 1g
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/readyz | grep -q ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging: *logging
+
+  admin-frontend:
+    image: ghcr.io/devflex-pro/traffo-flex-admin-frontend:${IMAGE_TAG:?Set IMAGE_TAG}
+    restart: unless-stopped
+    depends_on:
+      api-service:
+        condition: service_healthy
+    networks:
+      proxy:
+        aliases: [traffoflex-frontend]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging: *logging
+
+networks:
+  internal:
+    internal: true
+  proxy:
+    external: true
+    name: proxy
+
+volumes:
+  redpanda_data:
+  mongo_data:
+  clickhouse_data:
+  traffic_bloom_data:
+  traffic_cache_data:
+  traffic_click_wal_data:
