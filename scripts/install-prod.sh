@@ -30,9 +30,28 @@ ask() {
 }
 
 ask_secret() {
-  local label=$1 value
+  local label=$1 value='' char tty_settings
+  tty_settings=$(stty -g </dev/tty) || die 'Cannot inspect terminal settings'
+  stty -echo </dev/tty || die 'Cannot hide terminal input'
+  trap 'stty "$tty_settings" </dev/tty' EXIT
   printf '%s: ' "$label" >/dev/tty
-  IFS= read -r -s value </dev/tty || die 'Cannot read from the terminal'
+  while true; do
+    IFS= read -r -n 1 char </dev/tty || die 'Cannot read from the terminal'
+    if [[ -z "$char" ]]; then
+      break
+    fi
+    if [[ "$char" == $'\177' || "$char" == $'\b' ]]; then
+      if [[ -n "$value" ]]; then
+        value=${value%?}
+        printf '\b \b' >/dev/tty
+      fi
+      continue
+    fi
+    value+=$char
+    printf '*' >/dev/tty
+  done
+  stty "$tty_settings" </dev/tty
+  trap - EXIT
   printf '\n' >/dev/tty
   printf '%s' "$value"
 }
@@ -72,7 +91,7 @@ fi
 [[ $EUID -eq 0 ]] || die 'Run as root, for example with sudo bash'
 [[ -r /dev/tty && -w /dev/tty ]] || die 'An interactive terminal is required'
 
-for tool in docker curl awk od tr cmp mktemp systemctl findmnt; do
+for tool in docker curl awk od tr cmp mktemp systemctl findmnt stty; do
   command -v "$tool" >/dev/null 2>&1 || die "Missing host command: $tool"
 done
 [[ -f /etc/os-release ]] || die 'Cannot identify the host OS'
@@ -178,7 +197,7 @@ if [[ ! -f "$env_file" ]]; then
   app_domain=$(ask 'Admin domain (for example app.example.com)')
   bash "$nginx_renderer" --validate "$tracker_domain" "$postback_domain" "$app_domain" || die 'Invalid production domains'
   admin_email=$(ask 'Admin email (receives login codes)')
-  sender_email=$(ask 'Verified sender email for login codes')
+  sender_email=$(ask 'Sender email on a Resend-verified domain (for example auth@example.com)')
   resend_key=$(ask_secret 'Resend API key')
   require_safe_value 'Admin email' "$admin_email"
   require_safe_value 'Sender email' "$sender_email"
@@ -188,6 +207,7 @@ if [[ ! -f "$env_file" ]]; then
   app_password=$(random_hex)
   clickhouse_password=$(random_hex)
   jwt_secret=$(random_hex)
+  original_umask=$(umask)
   umask 077
   cat > "$env_file" <<EOF
 IMAGE_TAG=$release
@@ -206,6 +226,7 @@ AUTH_EMAIL_FROM=$sender_email
 AUTH_RESEND_API_KEY=$resend_key
 NGINX_PROXY_CIDR=$nginx_ip/32
 EOF
+  umask "$original_umask"
   unset root_password app_password clickhouse_password jwt_secret resend_key
 else
   [[ "$(read_env IMAGE_TAG "$env_file")" == "$release" ]] || die 'Existing .env.production uses a different IMAGE_TAG'
@@ -240,6 +261,8 @@ if [[ ! -f "$infra/.env" ]]; then
 fi
 [[ "$(read_env NGINX_PROXY_IP "$infra/.env")" == "$nginx_ip" ]] || die 'Existing infra NGINX_PROXY_IP differs from the trusted proxy address'
 mkdir -p "$infra/letsencrypt" "$infra/certbot-www"
+mkdir -p "$infra/certbot-www/.well-known/acme-challenge"
+chmod 755 "$infra/certbot-www" "$infra/certbot-www/.well-known" "$infra/certbot-www/.well-known/acme-challenge"
 nginx_config="$infra/nginx/conf.d/traffoflex.conf"
 if [[ -e "$nginx_config" ]]; then
   cmp -s "$nginx_config" <(bash "$nginx_renderer" "$nginx_template" "$env_file") || \
@@ -256,7 +279,7 @@ if [[ ! -f "$infra/letsencrypt/live/traffoflex/fullchain.pem" || ! -f "$infra/le
   docker compose --env-file "$infra/.env" -f "$infra/compose.yml" run --rm certbot certonly \
     --non-interactive --webroot -w /var/www/certbot \
     --cert-name traffoflex --email "$cert_email" --agree-tos --no-eff-email \
-    -d "$tracker_domain" -d "$postback_domain" -d "$app_domain"
+    -d "$tracker_domain" -d "$postback_domain" -d "$app_domain" </dev/null
 fi
 if [[ ! -e "$nginx_config" ]]; then
   bash "$nginx_renderer" "$nginx_template" "$env_file" > "$nginx_config"
@@ -267,8 +290,8 @@ docker compose --env-file "$env_file" -f "$release_dir/deploy/docker-compose.pro
 docker compose --env-file "$env_file" -f "$release_dir/deploy/docker-compose.prod.yml" pull
 docker compose --env-file "$env_file" -f "$release_dir/deploy/docker-compose.prod.yml" up -d --no-build
 
-docker compose --env-file "$infra/.env" -f "$infra/compose.yml" exec -T nginx nginx -t
-docker compose --env-file "$infra/.env" -f "$infra/compose.yml" exec -T nginx nginx -s reload
+docker compose --env-file "$infra/.env" -f "$infra/compose.yml" exec -T nginx nginx -t </dev/null
+docker compose --env-file "$infra/.env" -f "$infra/compose.yml" exec -T nginx nginx -s reload </dev/null
 
 admin_ready=false
 for ((attempt = 0; attempt < 12; attempt++)); do

@@ -32,6 +32,8 @@ email, a verified sender email and a Resend API key, generates database and JWT
 secrets, installs shared Nginx and Certbot, issues one certificate for all three
 names, starts TraffoFlex
 and enables certificate renewal. It never changes the firewall or SSH settings.
+The admin email may be a Gmail address. The sender email must use a domain
+verified in Resend, or login codes cannot be delivered.
 It preserves secrets, certificates and volumes when re-run with the same tag;
 it refuses an automatic upgrade to a different tag. Re-runs use the domains
 saved in `/opt/traffoflex/.env.production`. Changing domains after certificate

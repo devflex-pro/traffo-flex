@@ -5,6 +5,15 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 
 ## [Unreleased]
 
+### Fixed
+
+- Show masked feedback when entering the Resend API key during installation.
+- Clarify that the sender address for login codes must use a Resend-verified domain.
+- Restore the original file-creation mask after saving secrets and make the
+  ACME webroot readable by Nginx, including on installer retries.
+- Keep Docker Compose child processes from consuming the remaining installer
+  script when the one-command installation runs through `curl | bash`.
+
 ## [v0.1.0] - 2026-10-04
 
 ### Added
