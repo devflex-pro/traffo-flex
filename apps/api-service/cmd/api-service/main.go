@@ -74,6 +74,7 @@ func main() {
 			ReadyChecker:        cfg,
 			AdminFrontendOrigin: cfg.AdminFrontendOrigin,
 			TrackerPublicURL:    cfg.TrackerPublicURL,
+			PostbackPublicURL:   cfg.PostbackPublicURL,
 			IntegrationClient: integrations.NewHTTPClient(
 				cfg.TrafficServiceURL,
 				cfg.PostbackServiceURL,

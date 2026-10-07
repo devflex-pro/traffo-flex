@@ -42,6 +42,7 @@ type Options struct {
 	ReadyChecker               httpx.ReadyChecker
 	AdminFrontendOrigin        string
 	TrackerPublicURL           string
+	PostbackPublicURL          string
 	IntegrationClient          integrations.Client
 	ReportRepository           reports.Repository
 	CampaignRepository         campaigns.Repository
@@ -65,6 +66,7 @@ func NewRouterWithConfig(
 			ReadyChecker:        cfg,
 			AdminFrontendOrigin: cfg.AdminFrontendOrigin,
 			TrackerPublicURL:    cfg.TrackerPublicURL,
+			PostbackPublicURL:   cfg.PostbackPublicURL,
 			IntegrationClient: integrations.NewHTTPClient(
 				cfg.TrafficServiceURL,
 				cfg.PostbackServiceURL,
@@ -198,15 +200,25 @@ func NewRouterWithOptions(
 	r.Route(
 		"/api",
 		func(r chi.Router) {
-			r.Get("/client-config", func(w http.ResponseWriter, _ *http.Request) {
-				if err := httpx.JSON(
-					w,
-					http.StatusOK,
-					map[string]string{"tracker_base_url": opts.TrackerPublicURL},
-				); err != nil {
-					log.Error("failed to write client config", "error", err)
-				}
-			})
+			r.Get(
+				"/client-config",
+				func(
+					w http.ResponseWriter,
+					_ *http.Request,
+				) {
+					if err := httpx.JSON(
+						w,
+						http.StatusOK,
+						map[string]string{"tracker_base_url": opts.TrackerPublicURL, "postback_base_url": opts.PostbackPublicURL},
+					); err != nil {
+						log.Error(
+							"failed to write client config",
+							"error",
+							err,
+						)
+					}
+				},
+			)
 			if opts.AuthService != nil {
 				r.Post(
 					"/auth/request-otp",
@@ -404,6 +416,10 @@ func registerProtectedRoutes(
 	r.Get(
 		"/postback-templates",
 		postbackTemplateHandler.List,
+	)
+	r.Get(
+		"/outbound-postbacks/jobs",
+		postbackTemplateHandler.DeliveryJobs,
 	)
 	r.Get(
 		"/postback-logs",

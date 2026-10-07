@@ -14,6 +14,7 @@ import (
 	"github.com/devflex/traffoflex/apps/postback-service/internal/conversions"
 	apphttp "github.com/devflex/traffoflex/apps/postback-service/internal/http"
 	"github.com/devflex/traffoflex/apps/postback-service/internal/mongodb"
+	"github.com/devflex/traffoflex/apps/postback-service/internal/outbound"
 	"github.com/devflex/traffoflex/apps/postback-service/internal/postbacklogs"
 	"github.com/devflex/traffoflex/apps/postback-service/internal/postbacks"
 	"github.com/devflex/traffoflex/packages/go-shared/eventstream"
@@ -71,6 +72,21 @@ func main() {
 	}()
 
 	db := mongoClient.Database(cfg.MongoDatabase)
+	outboundWorker, err := outbound.NewPersistentWorker(
+		ctx,
+		db,
+		cfg.ClickHouseHTTPURL,
+		log,
+	)
+	if err != nil {
+		log.Error(
+			"failed to initialize outbound postbacks",
+			"error",
+			err,
+		)
+		os.Exit(1)
+	}
+	go outboundWorker.Run(ctx)
 	eventProducer, err := eventstream.NewProducer(eventstream.Config{
 		Brokers:      cfg.EventBrokers,
 		ClientID:     "postback-service",
@@ -141,6 +157,7 @@ func main() {
 			EventProducer:        eventProducer,
 			PostbackLogger:       postbackLogRepo,
 			PostbackSecrets:      postbacks.NewMongoSecretStore(db),
+			OutboundWorker:       outboundWorker,
 		},
 	)
 

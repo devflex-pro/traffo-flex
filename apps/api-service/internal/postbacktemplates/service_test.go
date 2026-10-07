@@ -3,8 +3,61 @@ package postbacktemplates
 import (
 	"context"
 	"errors"
+	"github.com/devflex/traffoflex/packages/go-shared/models"
 	"testing"
 )
+
+func TestOutgoingPostbackValidationAndPersistence(t *testing.T) {
+	service := NewService(NewMemoryRepository())
+	request := Request{Name: "Source callback", Slug: "source-callback", Direction: "outgoing", Enabled: true, SourceID: "src_1", URL: "https://receiver.example/pb?cid={source_click_id}&revenue={SUM}"}
+	item, err := service.Create(
+		context.Background(),
+		request,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Direction != "outgoing" || item.SourceID != "src_1" || !item.Enabled || item.URL != request.URL {
+		t.Fatalf(
+			"incorrect outgoing template: %#v",
+			item,
+		)
+	}
+	for _, value := range []string{"http://localhost/pb", "https://receiver.example/pb?cid={unknown}", "https://receiver.example/{cid}"} {
+		request.URL = value
+		if _, err := service.Create(
+			context.Background(),
+			request,
+		); !errors.Is(
+			err,
+			ErrInvalidInput,
+		) {
+			t.Fatalf(
+				"URL %q error=%v",
+				value,
+				err,
+			)
+		}
+	}
+	legacy := models.PostbackTemplate{ID: "legacy", Name: "Legacy", NetworkID: "net", Slug: "legacy", Mapping: map[string]string{"click_id": "cid"}}
+	if _, err := service.repo.Create(
+		context.Background(),
+		legacy,
+	); err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.Get(
+		context.Background(),
+		"legacy",
+	)
+	if err != nil || direction(got.Direction) != "incoming" {
+		t.Fatalf(
+			"legacy direction=%s error=%v",
+			got.Direction,
+			err,
+		)
+	}
+}
 
 func TestServiceCreateValidatesInput(t *testing.T) {
 	service := NewService(NewMemoryRepository())

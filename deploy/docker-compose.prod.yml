@@ -128,6 +128,7 @@ services:
       EVENT_BROKERS: redpanda-0:9092
       TRAFFIC_SERVICE_URL: http://traffic-service:8080
       TRACKER_PUBLIC_URL: https://${TRACKER_DOMAIN:?Set TRACKER_DOMAIN}
+      POSTBACK_PUBLIC_URL: https://${POSTBACK_DOMAIN:?Set POSTBACK_DOMAIN}
       POSTBACK_SERVICE_URL: http://postback-service:8081
       ADMIN_FRONTEND_ORIGIN: https://${APP_DOMAIN:?Set APP_DOMAIN}
       AUTH_ENV: production

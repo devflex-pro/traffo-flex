@@ -43,6 +43,8 @@ import {
   Metrics,
   PostbackLogRow,
   PostbackTemplate,
+  PostbackTemplateRequest,
+  OutboundPostbackJob,
   ReportRow,
   Status,
   Stream,
@@ -53,6 +55,7 @@ import {
   AuthUser,
   setActingAsUserID
 } from "./api";
+import { incomingPostbackURL, lospollosSmartlink, generatePostbackSecret } from "./postbacks";
 import "./styles.css";
 
 const queryClient = new QueryClient();
@@ -2202,219 +2205,209 @@ function DestinationCapsEditor({
   );
 }
 
+type PostbackFormValues = {
+  direction: "incoming" | "outgoing";
+  provider: "generic" | "lospollos";
+  name: string;
+  network_id: string;
+  network_name: string;
+  secret: string;
+  click_macro: string;
+  transaction_macro: string;
+  payout_macro: string;
+  url: string;
+  enabled: boolean;
+  source_id: string;
+  campaign_id: string;
+};
+
+function CopyablePostbackURL({ label, value, disabled = false }: { label: string; value: string; disabled?: boolean }) {
+  const [message, setMessage] = useState("");
+  useEffect(() => setMessage(""), [value]);
+  return <div className="space-y-2">
+    <label className="block text-sm font-medium">{label}</label>
+    <textarea className="input min-h-20 w-full font-mono text-xs" readOnly value={value} aria-label={label} />
+    <button type="button" className="button-secondary" disabled={!value || disabled} onClick={() => {
+      void navigator.clipboard.writeText(value).then(() => setMessage("Copied"), () => setMessage("Copy failed. Select and copy the URL manually."));
+    }}>Copy URL</button>
+    <span className="ml-2 text-xs text-zinc-600" aria-live="polite">{message}</span>
+  </div>;
+}
+
 function PostbacksPage() {
   const queryClient = useQueryClient();
-  const [editingTemplate, setEditingTemplate] = useState<PostbackTemplate | null>(null);
-  const [templateFormOpen, setTemplateFormOpen] = useState(false);
-  const [logFilters, setLogFilters] = useState({
-    network_id: "",
-    click_id: "",
-    transaction_id: "",
-    status: "",
-    limit: 100
+  const [tab, setTab] = useState<"incoming" | "outgoing">("incoming");
+  const [editing, setEditing] = useState<PostbackTemplate | null>(null);
+  const [open, setOpen] = useState(false);
+  const [smartlink, setSmartlink] = useState("");
+  const [formError, setFormError] = useState("");
+  const [logFilters, setLogFilters] = useState({ network_id: "", click_id: "", transaction_id: "", status: "", limit: 100 });
+  const templates = useQuery({ queryKey: ["postback-templates"], queryFn: () => api.postbackTemplates({ limit: 500 }) });
+  const networks = useQuery({ queryKey: ["affiliate-networks"], queryFn: api.affiliateNetworks });
+  const sources = useQuery({ queryKey: ["traffic-sources"], queryFn: () => api.trafficSources({ limit: 500 }) });
+  const campaigns = useQuery({ queryKey: ["campaigns", "postback-scopes"], queryFn: () => api.campaigns({ limit: 500 }) });
+  const clientConfig = useQuery({ queryKey: ["client-config"], queryFn: api.clientConfig });
+  const logs = useQuery({ queryKey: ["postback-logs", logFilters], queryFn: () => api.postbackLogs(logFilters), refetchInterval: 10000 });
+  const deliveries = useQuery({ queryKey: ["outbound-postback-jobs"], queryFn: api.outboundPostbackJobs, refetchInterval: 5000 });
+  const form = useForm<PostbackFormValues>();
+  const values = form.watch();
+  const defaultValues = (template: PostbackTemplate | null, direction: "incoming" | "outgoing"): PostbackFormValues => ({
+    direction: template?.direction ?? direction,
+    provider: template?.provider ?? "lospollos",
+    name: template?.name ?? (direction === "incoming" ? "LosPollos conversions" : ""),
+    network_id: template?.network_id ?? "",
+    network_name: "LosPollos",
+    secret: template?.secret ?? generatePostbackSecret(),
+    click_macro: template?.mapping.click_id ?? "cid",
+    transaction_macro: template?.mapping.transaction_id ?? "cid",
+    payout_macro: template?.mapping.payout ?? "sum",
+    url: template?.url ?? "",
+    enabled: template?.enabled ?? true,
+    source_id: template?.source_id ?? "",
+    campaign_id: template?.campaign_id ?? ""
   });
-  const templates = useQuery({
-    queryKey: ["postback-templates"],
-    queryFn: () => api.postbackTemplates()
-  });
-  const logs = useQuery({
-    queryKey: [
-      "postback-logs",
-      logFilters
-    ],
-    queryFn: () => api.postbackLogs(logFilters)
-  });
-  const createTemplate = useMutation({
-    mutationFn: api.createPostbackTemplate,
-    onSuccess: () => {
-      setTemplateFormOpen(false);
-      queryClient.invalidateQueries({ queryKey: ["postback-templates"] });
-    }
-  });
-  const updateTemplate = useMutation({
-    mutationFn: (data: {
-      network_id: string;
-      name: string;
-      slug: string;
-      secret: string;
-    }) =>
-      api.updatePostbackTemplate(
-        editingTemplate?.id ?? "",
-        {
-          ...data,
-          mapping: editingTemplate?.mapping ?? defaultPostbackMapping
+  const begin = (template: PostbackTemplate | null) => {
+    setEditing(template);
+    form.reset(defaultValues(template, template?.direction ?? tab));
+    setSmartlink("");
+    setFormError("");
+    save.reset();
+    setOpen(true);
+  };
+  const save = useMutation({
+    mutationFn: async (data: PostbackFormValues) => {
+      let networkID = data.direction === "incoming" ? data.network_id : "";
+      if (data.direction === "incoming" && !networkID) {
+        const existing = networks.data?.items.find(network => network.name.toLowerCase() === data.network_name.trim().toLowerCase());
+        if (existing) networkID = existing.id;
+        else {
+          const slug = data.network_name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `network-${crypto.randomUUID().slice(0, 8)}`;
+          const network = await api.createAffiliateNetwork({ name: data.network_name, slug });
+          networkID = network.id;
+          form.setValue("network_id", networkID);
+          await queryClient.invalidateQueries({ queryKey: ["affiliate-networks"] });
         }
-      ),
-    onSuccess: () => {
-      setEditingTemplate(null);
-      setTemplateFormOpen(false);
-      queryClient.invalidateQueries({ queryKey: ["postback-templates"] });
-    }
-  });
-  const deleteTemplate = useMutation({
-    mutationFn: api.deletePostbackTemplate,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["postback-templates"] })
-  });
-  const columns = useMemo<ColumnDef<PostbackTemplate>[]>(
-    () => [
-      { header: "Name", accessorKey: "name" },
-      { header: "Network", accessorKey: "network_id" },
-      { header: "Slug", accessorKey: "slug" },
-      {
-        header: "Actions",
-        cell: ({ row }) => (
-          <div className="flex gap-2">
-            <ActionIconButton
-              ariaLabel={`Edit postback template ${row.original.name}`}
-              icon="edit"
-              label="Edit template"
-              onClick={() => {
-                setEditingTemplate(row.original);
-                setTemplateFormOpen(true);
-              }}
-            />
-            <ActionIconButton
-              ariaLabel={`Delete postback template ${row.original.name}`}
-              danger
-              icon="delete"
-              label="Delete template"
-              onClick={() => deleteTemplate.mutate(row.original.id)}
-            />
-          </div>
-        )
       }
-    ],
-    [deleteTemplate]
-  );
-  const logColumns = useMemo<ColumnDef<PostbackLogRow>[]>(
-    () => [
-      {
-        header: "Created",
-        cell: ({ row }) => new Date(row.original.created_at).toLocaleString()
-      },
-      { header: "Network", accessorKey: "network_id" },
-      { header: "Click", accessorKey: "click_id" },
-      { header: "Transaction", accessorKey: "transaction_id" },
-      { header: "Status", accessorKey: "status" },
-      {
-        header: "Error",
-        cell: ({ row }) => (
-          <span className="break-words text-red-700">{row.original.error ?? ""}</span>
-        )
-      }
-    ],
-    []
-  );
-  const form = useForm<{ network_id: string; name: string; slug: string; secret: string }>({
-    defaultValues: {
-      network_id: editingTemplate?.network_id ?? "net_demo",
-      name: editingTemplate?.name ?? "",
-      slug: editingTemplate?.slug ?? "",
-      secret: editingTemplate?.secret ?? ""
-    }
-  });
-  useEffect(
-    () => {
-      form.reset({
-        network_id: editingTemplate?.network_id ?? "net_demo",
-        name: editingTemplate?.name ?? "",
-        slug: editingTemplate?.slug ?? "",
-        secret: editingTemplate?.secret ?? ""
-      });
+      const payload: PostbackTemplateRequest = {
+        direction: data.direction,
+        provider: data.direction === "incoming" ? data.provider : undefined,
+        network_id: networkID,
+        name: data.name.trim(),
+        slug: editing?.slug ?? `postback-${crypto.randomUUID().slice(0, 8)}`,
+        secret: data.direction === "incoming" ? data.secret.trim() : "",
+        mapping: data.direction === "incoming" ? { click_id: data.click_macro, transaction_id: data.transaction_macro, payout: data.payout_macro, status: "status" } : {},
+        url: data.direction === "outgoing" ? data.url.trim() : "",
+        enabled: data.direction === "outgoing" ? data.enabled : true,
+        source_id: data.direction === "outgoing" ? data.source_id : "",
+        campaign_id: data.direction === "outgoing" ? data.campaign_id : ""
+      };
+      return editing ? api.updatePostbackTemplate(editing.id, payload) : api.createPostbackTemplate(payload);
     },
-    [
-      editingTemplate,
-      form
-    ]
-  );
-
-  return (
-    <Page title="Postbacks">
-      <Panel title="Templates">
-        <div className="mb-4 flex justify-end">
-          <button
-            className="button-primary"
-            onClick={() => {
-              setEditingTemplate(null);
-              setTemplateFormOpen(true);
-            }}
-            type="button"
-          >
-            Create template
-          </button>
-        </div>
-        <DataTable columns={columns} data={templates.data?.items ?? []} />
-      </Panel>
-      <Modal
-        onClose={() => {
-          setTemplateFormOpen(false);
-          setEditingTemplate(null);
-        }}
-        open={templateFormOpen}
-        title={editingTemplate ? "Edit template" : "Create template"}
-      >
-        <form
-          key={editingTemplate?.id ?? "new-template"}
-          className="space-y-3"
-          onSubmit={form.handleSubmit((values) => {
-            if (editingTemplate) {
-              updateTemplate.mutate(values);
-              return;
-            }
-            createTemplate.mutate({
-              ...values,
-              mapping: defaultPostbackMapping
-            });
-            form.reset();
-          })}
-        >
-          <TextField label="Network ID" register={form.register("network_id")} />
-          <TextField label="Name" register={form.register("name")} />
-          <TextField label="Slug" register={form.register("slug")} />
-          <TextField label="Secret" register={form.register("secret")} />
-          <button className="button-primary" type="submit">
-            {editingTemplate ? "Save" : "Create"}
-          </button>
-        </form>
-      </Modal>
-      <Panel title="Recent postback logs" className="mt-4">
-        <div className="mb-4 grid grid-cols-5 gap-3">
-          <FilterInput
-            label="Network"
-            onChange={(value) => setLogFilters((current) => ({ ...current, network_id: value }))}
-            value={logFilters.network_id}
-          />
-          <FilterInput
-            label="Click"
-            onChange={(value) => setLogFilters((current) => ({ ...current, click_id: value }))}
-            value={logFilters.click_id}
-          />
-          <FilterInput
-            label="Transaction"
-            onChange={(value) => setLogFilters((current) => ({ ...current, transaction_id: value }))}
-            value={logFilters.transaction_id}
-          />
-          <FilterInput
-            label="Status"
-            onChange={(value) => setLogFilters((current) => ({ ...current, status: value }))}
-            value={logFilters.status}
-          />
-          <FilterInput
-            label="Limit"
-            onChange={(value) =>
-              setLogFilters((current) => ({
-                ...current,
-                limit: Number(value) || 100
-              }))
-            }
-            type="number"
-            value={String(logFilters.limit)}
-          />
-        </div>
-        <DataTable columns={logColumns} data={logs.data?.items ?? []} />
-      </Panel>
-    </Page>
-  );
+    onSuccess: saved => {
+      if (saved.direction === "outgoing") setOpen(false);
+      else { setEditing(saved); form.reset(defaultValues(saved, "incoming")); }
+      void queryClient.invalidateQueries({ queryKey: ["postback-templates"] });
+    }
+  });
+  const remove = useMutation({ mutationFn: api.deletePostbackTemplate, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["postback-templates"] }); } });
+  const base = clientConfig.data?.postback_base_url ?? "";
+  const preview = incomingPostbackURL(base, { network_id: values.network_id ?? "", secret: values.secret, provider: values.provider, mapping: { click_id: values.click_macro ?? "cid", transaction_id: values.transaction_macro ?? "cid", payout: values.payout_macro ?? "sum" } });
+  const templateColumns: ColumnDef<PostbackTemplate>[] = [
+    { header: "Name", accessorKey: "name" },
+    { header: "Integration", cell: ({ row }) => row.original.direction === "outgoing" ? (row.original.enabled ? "Enabled" : "Paused") : networks.data?.items.find(network => network.id === row.original.network_id)?.name ?? row.original.network_id },
+    { header: "Scope", cell: ({ row }) => row.original.direction !== "outgoing" ? (row.original.provider === "lospollos" ? "LosPollos" : "Generic") : [sources.data?.items.find(source => source.id === row.original.source_id)?.name, campaigns.data?.items.find(campaign => campaign.id === row.original.campaign_id)?.name].filter(Boolean).join(" / ") || "Global (this workspace)" },
+    { header: "Actions", cell: ({ row }) => <div className="flex gap-2">
+      <ActionIconButton icon="edit" label="Configure postback" onClick={() => begin(row.original)} />
+      <ActionIconButton icon="delete" danger label="Delete postback" onClick={() => { if (window.confirm(`Delete ${row.original.name}?`)) remove.mutate(row.original.id); }} />
+    </div> }
+  ];
+  const logColumns: ColumnDef<PostbackLogRow>[] = [
+    { header: "Created", cell: ({ row }) => new Date(row.original.created_at).toLocaleString() },
+    { header: "Network", accessorKey: "network_id" }, { header: "Click", accessorKey: "click_id" },
+    { header: "Transaction", accessorKey: "transaction_id" }, { header: "Status", accessorKey: "status" }, { header: "Error", accessorKey: "error" }
+  ];
+  const deliveryColumns: ColumnDef<OutboundPostbackJob>[] = [
+    { header: "Created", cell: ({ row }) => new Date(row.original.created_at).toLocaleString() },
+    { header: "Postback", cell: ({ row }) => templates.data?.items.find(template => template.id === row.original.template_id)?.name ?? row.original.template_id },
+    { header: "Click", accessorKey: "click_id" }, { header: "Status", accessorKey: "status" },
+    { header: "Attempts", accessorKey: "attempts" }, { header: "HTTP", cell: ({ row }) => row.original.http_status || "—" }, { header: "Error", accessorKey: "error" }
+  ];
+  const error = save.error || remove.error || templates.error || networks.error || clientConfig.error || (tab === "incoming" ? logs.error : deliveries.error || sources.error || campaigns.error);
+  return <Page title="Postbacks">
+    <p className="mb-4 text-sm text-zinc-600">Affiliate network → TraffoFlex → traffic source. Keep our click ID and the traffic source's click ID separate.</p>
+    <div className="mb-4 flex gap-2" role="tablist" aria-label="Postback direction">
+      <button type="button" role="tab" aria-selected={tab === "incoming"} className={tab === "incoming" ? "button-primary" : "button-secondary"} onClick={() => setTab("incoming")}>Incoming · affiliate networks</button>
+      <button type="button" role="tab" aria-selected={tab === "outgoing"} className={tab === "outgoing" ? "button-primary" : "button-secondary"} onClick={() => setTab("outgoing")}>Outgoing · traffic sources</button>
+    </div>
+    {error ? <p className="mb-3 text-sm text-red-700" role="alert">{error instanceof Error ? error.message : "Failed to load postbacks"}</p> : null}
+    <Panel title={tab === "incoming" ? "Receive conversions" : "Send conversions"}>
+      <p className="mb-3 text-sm text-zinc-600">{tab === "incoming" ? "Create an integration, then copy its Postback URL into the affiliate network's settings." : "Send approved conversions by HTTP GET. Choose a source or campaign, or use Global for this workspace."}</p>
+      <button type="button" className="button-primary mb-4" onClick={() => begin(null)}>Create postback</button>
+      <DataTable columns={templateColumns} data={templates.data?.items.filter(template => (template.direction ?? "incoming") === tab) ?? []} />
+    </Panel>
+    <Modal open={open} onClose={() => setOpen(false)} title={editing ? "Configure postback" : "Create postback"}>
+      <form className="space-y-4" onSubmit={form.handleSubmit(data => {
+        const schema = z.object({ name: z.string().trim().min(1), secret: z.string().trim().min(1), click_macro: z.string().regex(/^[a-z][a-z0-9_]*$/i), transaction_macro: z.string().regex(/^[a-z][a-z0-9_]*$/i), payout_macro: z.string().regex(/^[a-z][a-z0-9_]*$/i) });
+        if (data.direction === "incoming" && (!schema.safeParse(data).success || (!data.network_id && !data.network_name.trim()))) { setFormError("Enter a name, affiliate network, secret and valid macro names without braces."); return; }
+        if (data.direction === "outgoing" && (!data.name.trim() || !data.url.trim())) { setFormError("Enter a name and Postback URL."); return; }
+        setFormError("");
+        save.mutate(data);
+      })}>
+        <TextField label="Name" register={form.register("name")} />
+        {values.direction === "incoming" ? <>
+          <label className="block text-sm font-medium">Integration preset<select className="input mt-1 w-full" {...form.register("provider", { onChange: event => {
+            const lospollos = event.target.value === "lospollos";
+            form.setValue("click_macro", "cid"); form.setValue("transaction_macro", lospollos ? "cid" : "tx"); form.setValue("payout_macro", "sum");
+            form.setValue("network_name", lospollos ? "LosPollos" : "");
+          } })}><option value="lospollos">LosPollos</option><option value="generic">Generic</option></select></label>
+          <label className="block text-sm font-medium">Affiliate network<select className="input mt-1 w-full" {...form.register("network_id")}><option value="">Create a new affiliate network</option>{networks.data?.items.map(network => <option key={network.id} value={network.id}>{network.name}</option>)}</select></label>
+          {!values.network_id ? <TextField label="New affiliate network name" register={form.register("network_name")} /> : null}
+          <TextField label="Postback secret" register={form.register("secret")} />
+          <button type="button" className="button-secondary" onClick={() => form.setValue("secret", generatePostbackSecret())}>Generate secret</button>
+          <table className="w-full text-sm"><thead><tr><th className="text-left">Parameter</th><th className="text-left">Affiliate network macro (without braces)</th></tr></thead><tbody>
+            <tr><td>Click ID</td><td><input className="input w-full" aria-label="Click ID macro" {...form.register("click_macro")} /></td></tr>
+            <tr><td>Transaction ID</td><td><input className="input w-full" aria-label="Transaction ID macro" {...form.register("transaction_macro")} /></td></tr>
+            <tr><td>Payout (USD)</td><td><input className="input w-full" aria-label="Payout macro" {...form.register("payout_macro")} /></td></tr>
+          </tbody></table>
+          {values.provider === "lospollos" ? <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">LosPollos provides &#123;cid&#125; and &#123;sum&#125;. The preset uses &#123;cid&#125; as both click and transaction ID: one conversion per click. Repeated callbacks do not add revenue again.</p> : null}
+          {preview ? <CopyablePostbackURL label={values.provider === "lospollos" ? "Paste into LosPollos → Create Postback → Global → Postback URL" : "Paste into the affiliate network's Postback URL field"} value={preview} disabled={!editing || form.formState.isDirty} /> : <p className="text-sm text-zinc-600">Save the integration to generate its Postback URL.</p>}
+          {preview && (!editing || form.formState.isDirty) ? <p className="text-sm text-amber-700">Save the integration before copying this URL so the secret and affiliate network match the active settings.</p> : null}
+          {!base ? <p className="text-sm text-red-700">The public postback domain is unavailable. Check API configuration.</p> : null}
+          {values.provider === "lospollos" ? <div className="space-y-2 rounded-md border border-zinc-200 p-3">
+            <label className="block text-sm font-medium">Your LosPollos smartlink<input className="input mt-1 w-full" value={smartlink} onChange={event => setSmartlink(event.target.value)} placeholder="https://your-smartlink-domain/..." /></label>
+            {smartlink && !lospollosSmartlink(smartlink) ? <p className="text-sm text-red-700">Enter a valid HTTP(S) smartlink.</p> : null}
+            <CopyablePostbackURL label="Paste this URL into the campaign's destination" value={lospollosSmartlink(smartlink)} />
+            <p className="text-xs text-zinc-600">The builder preserves your link parameters and sets cid=&#123;click_id&#125;, s1=&#123;sub1&#125; through s4=&#123;sub4&#125;.</p>
+          </div> : null}
+        </> : <>
+          <label className="block text-sm font-medium">Traffic source<select className="input mt-1 w-full" {...form.register("source_id")}><option value="">Global · all sources in this workspace</option>{sources.data?.items.map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>
+          <label className="block text-sm font-medium">Campaign<select className="input mt-1 w-full" {...form.register("campaign_id")}><option value="">All campaigns</option>{campaigns.data?.items.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select></label>
+          <TextField label="Postback URL" register={form.register("url")} />
+          <p className="text-xs text-zinc-600">Example: https://source.example/postback?clickid=&#123;source_click_id&#125;&amp;revenue=&#123;payout&#125;&amp;event_id=&#123;conversion_id&#125;</p>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" {...form.register("enabled")} />Enabled</label>
+          <table className="w-full text-sm"><thead><tr><th className="text-left">Macro</th><th className="text-left">Value</th></tr></thead><tbody>
+            <tr><td><code>&#123;source_click_id&#125;</code></td><td>The traffic source's original click ID. Use this when reporting back to that source.</td></tr>
+            <tr><td><code>&#123;click_id&#125; / &#123;cid&#125;</code></td><td>TraffoFlex click ID.</td></tr>
+            <tr><td><code>&#123;payout&#125; / &#123;sum&#125;</code></td><td>Conversion payout in its currency.</td></tr>
+            <tr><td><code>&#123;currency&#125;</code></td><td>Currency code.</td></tr>
+            <tr><td><code>&#123;conversion_id&#125;</code></td><td>Stable event ID for receiver deduplication.</td></tr>
+            <tr><td><code>&#123;transaction_id&#125;, &#123;status&#125;, &#123;event_type&#125;, &#123;network_id&#125;</code></td><td>Conversion details.</td></tr>
+            <tr><td><code>&#123;sub1&#125;…&#123;sub10&#125; / &#123;s1&#125;…&#123;s4&#125;</code></td><td>Saved click SubIDs.</td></tr>
+          </tbody></table>
+          <p className="text-sm text-zinc-600">Macro names are case insensitive. Pass the source's click token as source_click_id in your campaign tracking URL. New approved conversions are sent with up to five attempts; old conversions are not replayed. Receivers should deduplicate by conversion_id or Idempotency-Key.</p>
+        </>}
+        {formError || save.error ? <p role="alert" className="text-sm text-red-700">{formError || (save.error instanceof Error ? save.error.message : "Save failed")}</p> : null}
+        <button className="button-primary" type="submit" disabled={save.isPending}>{save.isPending ? "Saving…" : "Save postback"}</button>
+      </form>
+    </Modal>
+    {tab === "incoming" ? <Panel title="Incoming postback log" className="mt-4">
+      <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">{(["network_id", "click_id", "transaction_id", "status"] as const).map(key => <FilterInput key={key} label={key.replace(/_/g, " ")} value={logFilters[key]} onChange={value => setLogFilters(current => ({ ...current, [key]: value }))} />)}</div>
+      <DataTable columns={logColumns} data={logs.data?.items ?? []} />
+    </Panel> : <Panel title="Outgoing delivery log · latest 100" className="mt-4">
+      <p className="mb-3 text-sm text-zinc-600">Pending → sending → delivered. Failed means the receiver did not accept the request after retries, or required click data is missing.</p>
+      <DataTable columns={deliveryColumns} data={deliveries.data?.items ?? []} />
+    </Panel>}
+  </Page>;
 }
 
 function HealthHistoryPage() {
@@ -2480,13 +2473,6 @@ function HealthHistoryPage() {
     </Page>
   );
 }
-
-const defaultPostbackMapping = {
-  click_id: "cid",
-  transaction_id: "tx",
-  payout: "sum",
-  status: "status"
-};
 
 function ReportsPage() {
   const [searchParams, setSearchParams] = useSearchParams();

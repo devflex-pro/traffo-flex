@@ -63,6 +63,7 @@ jobs:
           NGINX_PROXY_CIDR: 172.30.240.10/32
           NGINX_PROXY_IP: 172.30.240.10
           TRACKER_DOMAIN: trk.example.com
+          POSTBACK_DOMAIN: pb.example.com
           APP_DOMAIN: app.example.com
         run: |
           docker compose -f deploy/docker-compose.prod.yml config --quiet

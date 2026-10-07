@@ -38,7 +38,7 @@ func TestHealthAndReady(t *testing.T) {
 func TestClientConfigReturnsTrackerBaseURL(t *testing.T) {
 	router := NewRouterWithOptions(
 		testLogger(),
-		Options{TrackerPublicURL: "https://go.example.com"},
+		Options{TrackerPublicURL: "https://go.example.com", PostbackPublicURL: "https://pb.example.com"},
 	)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(
@@ -53,13 +53,17 @@ func TestClientConfigReturnsTrackerBaseURL(t *testing.T) {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
 	var payload struct {
-		TrackerBaseURL string `json:"tracker_base_url"`
+		TrackerBaseURL  string `json:"tracker_base_url"`
+		PostbackBaseURL string `json:"postback_base_url"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
 	if payload.TrackerBaseURL != "https://go.example.com" {
 		t.Fatalf("tracker URL = %q", payload.TrackerBaseURL)
+	}
+	if payload.PostbackBaseURL != "https://pb.example.com" {
+		t.Fatalf("postback URL = %q", payload.PostbackBaseURL)
 	}
 }
 
@@ -690,6 +694,13 @@ func TestAuthOTPFlowProtectsAPIRoutes(t *testing.T) {
 		router,
 		stdhttp.MethodGet,
 		"/api/campaigns",
+		stdhttp.StatusUnauthorized,
+	)
+	assertStatus(
+		t,
+		router,
+		stdhttp.MethodGet,
+		"/api/outbound-postbacks/jobs",
 		stdhttp.StatusUnauthorized,
 	)
 

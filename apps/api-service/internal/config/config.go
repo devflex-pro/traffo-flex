@@ -18,6 +18,7 @@ type Config struct {
 	ClickHouseHTTPURL      string
 	TrafficServiceURL      string
 	TrackerPublicURL       string
+	PostbackPublicURL      string
 	PostbackServiceURL     string
 	AdminFrontendOrigin    string
 	AuthAdminEmail         string
@@ -59,6 +60,10 @@ func Load() Config {
 		TrackerPublicURL: sharedconfig.Env(
 			"TRACKER_PUBLIC_URL",
 			"http://localhost:8080",
+		),
+		PostbackPublicURL: sharedconfig.Env(
+			"POSTBACK_PUBLIC_URL",
+			"http://localhost:8081",
 		),
 		PostbackServiceURL: sharedconfig.Env(
 			"POSTBACK_SERVICE_URL",
@@ -160,6 +165,7 @@ func (c Config) Validate() error {
 			"https",
 		),
 		validateTrackerPublicURL(c),
+		validatePostbackPublicURL(c),
 		sharedconfig.RequireURL(
 			"POSTBACK_SERVICE_URL",
 			c.PostbackServiceURL,
@@ -209,6 +215,23 @@ func validateTrackerPublicURL(c Config) error {
 	}
 	if !c.LocalAuthEnv() && parsed.Scheme != "https" {
 		return errors.New("TRACKER_PUBLIC_URL must use HTTPS in production")
+	}
+	return nil
+}
+
+func validatePostbackPublicURL(c Config) error {
+	// Optional for backwards-compatible config construction; Load always provides it.
+	if c.PostbackPublicURL == "" {
+		return nil
+	}
+	copy := c
+	copy.TrackerPublicURL = c.PostbackPublicURL
+	if err := validateTrackerPublicURL(copy); err != nil {
+		return errors.New(strings.ReplaceAll(
+			err.Error(),
+			"TRACKER_PUBLIC_URL",
+			"POSTBACK_PUBLIC_URL",
+		))
 	}
 	return nil
 }

@@ -443,14 +443,20 @@ type AffiliateNetwork struct {
 }
 
 type PostbackTemplate struct {
-	ID        string            `json:"id"`
-	OwnerID   string            `json:"owner_id,omitempty"`
-	TeamID    string            `json:"team_id"`
-	NetworkID string            `json:"network_id"`
-	Name      string            `json:"name"`
-	Slug      string            `json:"slug"`
-	Secret    string            `json:"secret,omitempty"`
-	Mapping   map[string]string `json:"mapping"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID         string            `json:"id"`
+	OwnerID    string            `json:"owner_id,omitempty"`
+	TeamID     string            `json:"team_id"`
+	NetworkID  string            `json:"network_id"`
+	Name       string            `json:"name"`
+	Slug       string            `json:"slug"`
+	Secret     string            `json:"secret,omitempty"`
+	Mapping    map[string]string `json:"mapping"`
+	Direction  string            `json:"direction,omitempty"`
+	Provider   string            `json:"provider,omitempty"`
+	URL        string            `json:"url,omitempty"`
+	Enabled    bool              `json:"enabled"`
+	SourceID   string            `json:"source_id,omitempty"`
+	CampaignID string            `json:"campaign_id,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
+	UpdatedAt  time.Time         `json:"updated_at"`
 }

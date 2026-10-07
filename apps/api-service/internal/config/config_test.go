@@ -21,6 +21,7 @@ func TestTrackerPublicURLValidation(t *testing.T) {
 	}
 	cfg.TrackerPublicURL = "http://go.example.com"
 	cfg.AuthEnv = "production"
+	cfg.PostbackPublicURL = "https://pb.example.com"
 	cfg.AuthResendAPIKey = "re_test"
 	cfg.AuthEmailFrom = "noreply@example.com"
 	if err := cfg.Validate(); err == nil {
@@ -29,6 +30,26 @@ func TestTrackerPublicURLValidation(t *testing.T) {
 	cfg.TrackerPublicURL = "https://go.example.com"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid production tracker URL rejected: %v", err)
+	}
+}
+
+func TestPostbackPublicURLValidation(t *testing.T) {
+	cfg := Load()
+	cfg.PostbackPublicURL = "https://pb.example.com/path"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("postback origin with a path was accepted")
+	}
+	cfg.PostbackPublicURL = "http://pb.example.com"
+	cfg.AuthEnv = "production"
+	cfg.TrackerPublicURL = "https://go.example.com"
+	cfg.AuthResendAPIKey = "re_test"
+	cfg.AuthEmailFrom = "noreply@example.com"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("insecure production postback origin was accepted")
+	}
+	cfg.PostbackPublicURL = "https://pb.example.com"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

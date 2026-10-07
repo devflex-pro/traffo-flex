@@ -5,6 +5,17 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 
 ## [Unreleased]
 
+## [v0.1.3] - 2026-10-08
+
+### Added
+
+- Separate incoming and outgoing postback forms, a LosPollos preset with
+  copyable callback and smartlink builders, and an outgoing delivery log.
+- Persistent outbound callback delivery with owner/source/campaign scopes,
+  original source click IDs, query-encoded macros, bounded retries and recovery
+  after restart. Historical conversions are not replayed automatically.
+- A public postback origin in client configuration and production Compose.
+
 ## [v0.1.2] - 2026-10-04
 
 ### Added

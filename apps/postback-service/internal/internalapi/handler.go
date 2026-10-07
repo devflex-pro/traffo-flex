@@ -1,6 +1,7 @@
 package internalapi
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -10,12 +11,19 @@ import (
 
 type Handler struct {
 	log      *slog.Logger
-	outbound *outbound.Service
+	outbound Retryer
+}
+
+type Retryer interface {
+	Retry(context.Context) (
+		int,
+		error,
+	)
 }
 
 func NewHandler(
 	log *slog.Logger,
-	outboundService *outbound.Service,
+	outboundService Retryer,
 ) *Handler {
 	if outboundService == nil {
 		outboundService = outbound.NewService(

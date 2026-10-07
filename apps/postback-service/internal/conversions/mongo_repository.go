@@ -41,6 +41,8 @@ func (r *MongoRepository) CreateOrGet(
 	doc["_id"] = event.ConversionID
 	doc["delivery_status"] = "pending"
 	doc["attribution_status"] = "pending"
+	doc["outbound_status"] = "pending"
+	doc["outbound_next_attempt_at"] = time.Now().UTC()
 	doc["attribution_attempts"] = 0
 	doc["attribution_next_attempt_at"] = time.Now().UTC()
 	if _, err := r.conversions.InsertOne(

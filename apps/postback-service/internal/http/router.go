@@ -6,6 +6,7 @@ import (
 
 	"github.com/devflex/traffoflex/apps/postback-service/internal/conversions"
 	"github.com/devflex/traffoflex/apps/postback-service/internal/internalapi"
+	"github.com/devflex/traffoflex/apps/postback-service/internal/outbound"
 	"github.com/devflex/traffoflex/apps/postback-service/internal/postbacklogs"
 	"github.com/devflex/traffoflex/apps/postback-service/internal/postbacks"
 	"github.com/devflex/traffoflex/packages/go-shared/eventstream"
@@ -36,6 +37,7 @@ type Options struct {
 	PostbackLogger       postbacklogs.Logger
 	EventProducer        *eventstream.Producer
 	PostbackSecrets      postbacks.SecretStore
+	OutboundWorker       *outbound.PersistentWorker
 }
 
 func NewRouterWithOptions(
@@ -67,9 +69,13 @@ func NewRouterWithOptions(
 			opts.PostbackSecrets,
 		)
 	}
+	var retryer internalapi.Retryer
+	if opts.OutboundWorker != nil {
+		retryer = opts.OutboundWorker
+	}
 	internalHandler := internalapi.NewHandler(
 		log,
-		nil,
+		retryer,
 	)
 
 	r.Use(httpx.RequestID)

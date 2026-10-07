@@ -94,6 +94,7 @@ export type CampaignStructure = {
 
 export type ClientConfig = {
   tracker_base_url: string;
+  postback_base_url: string;
 };
 
 export type TrafficbackConfig = {
@@ -220,6 +221,24 @@ export type PostbackTemplate = {
   slug: string;
   secret?: string;
   mapping: Record<string, string>;
+  direction?: "incoming" | "outgoing";
+  provider?: "generic" | "lospollos";
+  url?: string;
+  enabled?: boolean;
+  source_id?: string;
+  campaign_id?: string;
+};
+
+export type OutboundPostbackJob = {
+  id: string;
+  template_id: string;
+  conversion_id: string;
+  click_id: string;
+  status: string;
+  attempts: number;
+  http_status: number;
+  error?: string;
+  created_at: string;
 };
 
 export type PostbackLogRow = {
@@ -299,6 +318,12 @@ export type PostbackTemplateRequest = {
   slug: string;
   secret?: string;
   mapping: Record<string, string>;
+  direction?: "incoming" | "outgoing";
+  provider?: "generic" | "lospollos";
+  url?: string;
+  enabled?: boolean;
+  source_id?: string;
+  campaign_id?: string;
 };
 
 type ApiError = {
@@ -544,6 +569,9 @@ export const api = {
     ),
   trafficSources: (filters: ListFilters = {}) =>
     request<ListResponse<TrafficSource>>(`/api/traffic-sources${queryString(filters)}`),
+  affiliateNetworks: () => request<ListResponse<{ id: string; name: string; slug: string }>>("/api/affiliate-networks?limit=500"),
+  createAffiliateNetwork: (data: { name: string; slug: string }) => request<{ id: string; name: string; slug: string }>("/api/affiliate-networks", { method: "POST", ...jsonBody(data) }),
+  outboundPostbackJobs: () => request<{ items: OutboundPostbackJob[] }>("/api/outbound-postbacks/jobs"),
   postbackLogs: (filters: PostbackLogFilters = {}) =>
     request<PostbackLogsReport>(`/api/postback-logs${queryString(filters)}`),
   healthHistory: (filters: HealthHistoryFilters = {}) =>
