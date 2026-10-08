@@ -5,6 +5,13 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 
 ## [Unreleased]
 
+## [v0.1.5] - 2026-10-08
+
+### Fixed
+
+- Show callback payout and currency in incoming postback logs, including
+  historical records, and display affiliate network names in the table.
+
 ## [v0.1.4] - 2026-10-08
 
 ### Changed

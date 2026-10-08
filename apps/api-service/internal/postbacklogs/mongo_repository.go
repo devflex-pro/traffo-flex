@@ -3,6 +3,9 @@ package postbacklogs
 import (
 	"context"
 	"encoding/json"
+	"math"
+	"strconv"
+	"strings"
 
 	"github.com/devflex/traffoflex/apps/api-service/internal/scope"
 
@@ -154,6 +157,29 @@ func decodeRow(doc bson.M) (
 	}
 	if row.RawPayload == nil {
 		row.RawPayload = map[string]string{}
+	}
+	// Derive display values from the original request so historical logs work
+	// without rewriting data or changing the conversion/analytics event schema.
+	for _, key := range []string{"payout", "sum", "amount", "revenue"} {
+		raw := row.RawPayload[key]
+		if raw == "" {
+			continue
+		}
+		payout, err := strconv.ParseFloat(
+			raw,
+			64,
+		)
+		if err == nil && !math.IsNaN(payout) && !math.IsInf(
+			payout,
+			0,
+		) {
+			row.Payout = &payout
+		}
+		break
+	}
+	row.Currency = strings.ToUpper(strings.TrimSpace(row.RawPayload["currency"]))
+	if row.Currency == "" {
+		row.Currency = "USD"
 	}
 	return row, nil
 }

@@ -54,6 +54,8 @@ type Row struct {
 	NetworkID     string            `json:"network_id"`
 	ClickID       string            `json:"click_id,omitempty"`
 	TransactionID string            `json:"transaction_id,omitempty"`
+	Payout        *float64          `json:"payout"`
+	Currency      string            `json:"currency"`
 	Status        string            `json:"status"`
 	Error         string            `json:"error,omitempty"`
 	RawPayload    map[string]string `json:"raw_payload"`

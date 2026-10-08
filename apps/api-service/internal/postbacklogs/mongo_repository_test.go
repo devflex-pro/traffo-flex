@@ -12,6 +12,46 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+func TestDecodeHistoricalLogPayout(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		payload  map[string]string
+		want     *float64
+		currency string
+	}{
+		{name: "canonical", payload: map[string]string{"payout": "1.2345", "currency": "eur"}, want: logAmount(1.2345), currency: "EUR"},
+		{name: "sum alias", payload: map[string]string{"sum": "12.50"}, want: logAmount(12.5), currency: "USD"},
+		{name: "amount alias", payload: map[string]string{"amount": "0.00001"}, want: logAmount(0.00001), currency: "USD"},
+		{name: "revenue alias", payload: map[string]string{"revenue": "2"}, want: logAmount(2), currency: "USD"},
+		{name: "explicit zero", payload: map[string]string{"payout": "0", "sum": "9"}, want: logAmount(0), currency: "USD"},
+		{name: "missing", payload: map[string]string{}, currency: "USD"},
+		{name: "invalid", payload: map[string]string{"payout": "invalid", "sum": "9"}, currency: "USD"},
+		{name: "invalid whitespace", payload: map[string]string{"payout": " ", "sum": "9"}, currency: "USD"},
+		{name: "nan", payload: map[string]string{"payout": "NaN"}, currency: "USD"},
+		{name: "infinity", payload: map[string]string{"payout": "+Inf"}, currency: "USD"},
+	} {
+		t.Run(
+			tc.name,
+			func(t *testing.T) {
+				row, err := decodeRow(bson.M{"raw_payload": tc.payload})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if row.Currency != tc.currency || (row.Payout == nil) != (tc.want == nil) || (row.Payout != nil && *row.Payout != *tc.want) {
+					t.Fatalf(
+						"payout/currency mismatch: %+v",
+						row,
+					)
+				}
+			},
+		)
+	}
+}
+
+func logAmount(value float64) *float64 {
+	return &value
+}
+
 func TestMongoLogPeriodSearchSortingAndIsolation(t *testing.T) {
 	uri := os.Getenv("POSTBACK_LOG_TEST_MONGO_URI")
 	if uri == "" {

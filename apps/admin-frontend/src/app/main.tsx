@@ -2343,7 +2343,9 @@ function PostbacksPage() {
   const logColumns: ColumnDef<PostbackLogRow>[] = [
     { accessorKey: "created_at", header: () => <button type="button" className="inline-flex items-center gap-1 hover:text-zinc-900" aria-label={`Sort by time · ${logFilters.order === "desc" ? "newest first" : "oldest first"}`} onClick={() => setLogFilters(current => ({ ...current, order: current.order === "desc" ? "asc" : "desc", offset: 0 }))}>Created {logFilters.order === "desc" ? "↓" : "↑"}</button>, cell: ({ row }) => <time dateTime={row.original.created_at} title={row.original.created_at}>{new Date(row.original.created_at).toLocaleString()}</time> },
     { header: "Postback ID", accessorKey: "postback_id" },
-    { header: "Network", accessorKey: "network_id" }, { header: "Click", accessorKey: "click_id" },
+    { header: "Network", cell: ({ row }) => <span title={row.original.network_id}>{networks.data?.items.find(network => network.id === row.original.network_id)?.name ?? row.original.network_id}</span> },
+    { header: "Payout", cell: ({ row }) => row.original.payout == null ? "—" : <span className="whitespace-nowrap tabular-nums">{row.original.payout.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 8 })} {row.original.currency}</span> },
+    { header: "Click", accessorKey: "click_id" },
     { header: "Transaction", accessorKey: "transaction_id" }, { header: "Status", accessorKey: "status" }, { header: "Error", accessorKey: "error" }
   ];
   const deliveryColumns: ColumnDef<OutboundPostbackJob>[] = [

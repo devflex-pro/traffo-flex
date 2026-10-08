@@ -63,6 +63,11 @@ owner may not appear in a workspace's log.
 
 The incoming log is a table with a single exact-ID search (postback, click or
 transaction ID), optional UTC date boundaries and a sortable time column.
+It shows affiliate network names and the amount reported in each callback,
+with its currency. The amount is derived from the original `payout`, `sum`,
+`amount` or `revenue` parameter, so historical records do not need a migration.
+An explicit zero is shown as zero; a missing or invalid amount is shown as a dash.
+Duplicate rows show the received amount without adding it to campaign revenue.
 Filtering, sorting and pagination run on the API over all workspace records.
 `GET /api/postback-logs` accepts `id`, RFC3339 `from`/`to`, `order=asc|desc`,
 `limit` and `offset`; the previous individual filters remain supported.

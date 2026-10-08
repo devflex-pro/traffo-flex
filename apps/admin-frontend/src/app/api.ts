@@ -247,6 +247,8 @@ export type PostbackLogRow = {
   network_id: string;
   click_id?: string;
   transaction_id?: string;
+  payout: number | null;
+  currency: string;
   status: string;
   error?: string;
   raw_payload: Record<string, string>;
