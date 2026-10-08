@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/devflex/traffoflex/packages/go-shared/httpx"
 )
@@ -27,6 +28,10 @@ type Repository interface {
 }
 
 type Query struct {
+	ID            string
+	From          time.Time
+	To            time.Time
+	Order         string
 	NetworkID     string
 	ClickID       string
 	TransactionID string
@@ -145,8 +150,46 @@ func ParseQuery(r *http.Request) (
 	values := r.URL.Query()
 	query := Query{
 		Limit: 100,
+		Order: "desc",
 	}
 	var err error
+	query.ID, err = parseOptionalFilter(
+		"id",
+		values.Get("id"),
+	)
+	if err != nil {
+		return Query{}, err
+	}
+	for name, target := range map[string]*time.Time{"from": &query.From, "to": &query.To} {
+		if raw := strings.TrimSpace(values.Get(name)); raw != "" {
+			parsed, parseErr := time.Parse(
+				time.RFC3339Nano,
+				raw,
+			)
+			if parseErr != nil {
+				return Query{}, errors.Join(
+					ErrInvalidQuery,
+					errors.New(name+" must be an RFC3339 timestamp"),
+				)
+			}
+			*target = parsed.UTC()
+		}
+	}
+	if !query.From.IsZero() && !query.To.IsZero() && query.From.After(query.To) {
+		return Query{}, errors.Join(
+			ErrInvalidQuery,
+			errors.New("from must not be after to"),
+		)
+	}
+	if order := strings.TrimSpace(values.Get("order")); order != "" {
+		if order != "asc" && order != "desc" {
+			return Query{}, errors.Join(
+				ErrInvalidQuery,
+				errors.New("order must be asc or desc"),
+			)
+		}
+		query.Order = order
+	}
 	query.NetworkID, err = parseOptionalFilter(
 		"network_id",
 		values.Get("network_id"),
@@ -222,6 +265,18 @@ func parseOptionalFilter(
 
 func (q Query) Filters() map[string]string {
 	filters := make(map[string]string)
+	if q.ID != "" {
+		filters["id"] = q.ID
+	}
+	if !q.From.IsZero() {
+		filters["from"] = q.From.Format(time.RFC3339Nano)
+	}
+	if !q.To.IsZero() {
+		filters["to"] = q.To.Format(time.RFC3339Nano)
+	}
+	if q.Order != "" {
+		filters["order"] = q.Order
+	}
 	if q.NetworkID != "" {
 		filters["network_id"] = q.NetworkID
 	}

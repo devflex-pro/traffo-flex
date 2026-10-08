@@ -3,6 +3,7 @@ package postbacklogs
 import (
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestParseQueryReadsPagination(t *testing.T) {
@@ -35,6 +36,40 @@ func TestParseQueryReadsPagination(t *testing.T) {
 			"offset = %d, want 50",
 			query.Offset,
 		)
+	}
+}
+
+func TestParseQueryReadsIDPeriodAndOrder(t *testing.T) {
+	req := httptest.NewRequest(
+		"GET",
+		"/postback-logs?id=clk_1&from=2026-10-08T03:00:00%2B03:00&to=2026-10-08T23:59:59.999Z&order=asc",
+		nil,
+	)
+	query, err := ParseQuery(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query.ID != "clk_1" || query.Order != "asc" || query.From.Format(time.RFC3339) != "2026-10-08T00:00:00Z" || query.Filters()["to"] != "2026-10-08T23:59:59.999Z" {
+		t.Fatalf(
+			"unexpected filters: %v",
+			query.Filters(),
+		)
+	}
+}
+
+func TestParseQueryRejectsInvalidLogFilters(t *testing.T) {
+	for _, raw := range []string{"from=yesterday", "to=2026-10-08", "from=2026-10-09T00:00:00Z&to=2026-10-08T00:00:00Z", "order=arbitrary", "id=%24where"} {
+		req := httptest.NewRequest(
+			"GET",
+			"/postback-logs?"+raw,
+			nil,
+		)
+		if _, err := ParseQuery(req); err == nil {
+			t.Fatalf(
+				"accepted invalid filters %q",
+				raw,
+			)
+		}
 	}
 }
 

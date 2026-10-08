@@ -5,6 +5,18 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 
 ## [Unreleased]
 
+## [v0.1.4] - 2026-10-08
+
+### Changed
+
+- Make the incoming postback form universal across affiliate networks, remove
+  provider presets and the destination smartlink builder, and expose optional
+  transaction/status macros and payout currency. Existing callback URLs remain
+  valid.
+- Simplify the incoming log to an ID search, UTC period filters and a sortable
+  time column, with server-side search, sorting and pagination across workspace
+  records.
+
 ## [v0.1.3] - 2026-10-08
 
 ### Added

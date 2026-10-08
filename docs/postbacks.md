@@ -5,39 +5,42 @@ approved conversions to traffic sources. The two directions have separate tabs
 in the admin **Postbacks** page. The frontend uses `api-service` for configuration;
 public callbacks are handled by `postback-service`.
 
-## LosPollos setup
+## Incoming setup
 
-1. Create an **Incoming** integration using the **LosPollos** preset. Select your
-   affiliate network or create it in the same form. Keep the generated secret.
-2. Save the integration and copy the generated Postback URL into LosPollos:
-   **Create Postback → Global → Postback URL**. The URL uses the network's ID,
-   not the template slug. With public postback domain `https://cb.tf.devflex.pro`,
-   its shape is:
+1. Create an **Incoming** integration. Select your affiliate network or create
+   it in the same form, give the integration a name and keep its generated secret.
+2. Enter the network's macro names without braces: for example, `cid` for
+   `{cid}` and `sum` for `{sum}`. Set the payout currency. Transaction ID and
+   Status macros are optional: a blank transaction macro uses the click macro,
+   and a blank status macro sends `approved`.
+3. Save the integration and copy its generated Postback URL into the affiliate
+   network's postback settings. The URL uses the network's ID, not the template
+   slug. For click macro `cid`, payout macro `sum`, USD and no transaction/status
+   macro, its shape is:
 
    ```text
-   https://cb.tf.devflex.pro/pb/NETWORK_ID?secret=YOUR_SECRET&click_id={cid}&transaction_id={cid}&payout={sum}&currency=USD&status=approved&sub1={s1}&sub2={s2}&sub3={s3}&sub4={s4}
+   https://cb.tf.devflex.pro/pb/NETWORK_ID?secret=YOUR_SECRET&click_id={cid}&transaction_id={cid}&payout={sum}&currency=USD&status=approved
    ```
 
-3. Paste your LosPollos smartlink into the form's link builder. Copy its output
-   into the campaign destination URL. It preserves other link parameters and
-   sets `cid={click_id}` and `s1={sub1}` through `s4={sub4}`. LosPollos substitutes
-   `{cid}`, `{sum}`, and its SubID macros in the callback; TraffoFlex substitutes
-   `{click_id}` and `{sub1}`…`{sub4}` on the outgoing visitor redirect.
-4. Pass your traffic source's own click token to the campaign URL as
-   `source_click_id=SOURCE_CLICK_MACRO`. Keep it separate from TraffoFlex's
-   generated internal `click_id`.
+The form is shared by all affiliate networks. Offer and smartlink URLs are
+configured as campaign destinations. Add `TRAFFIC_CLICK_PARAMETER={click_id}`
+there, using the parameter name required by that network, so its callbacks can
+return the TraffoFlex click ID. Pass the traffic source's own token to the
+campaign tracking URL as `source_click_id=SOURCE_CLICK_MACRO`.
 
-The LosPollos preset counts **one conversion per click**: its available callback
-macros do not include a separate order ID, so `{cid}` is also used as
-`transaction_id`. Repeated callbacks with the same owner/network/transaction ID
-return the previously accepted conversion without changing payout or status.
+Using the click ID as the transaction ID counts **one conversion per click**.
+Repeated callbacks with the same owner/network/transaction ID return the
+previously accepted conversion without changing payout or status.
 Use a distinct transaction-ID macro for networks that report multiple orders
 or events per click. Status updates for an already accepted transaction are not
 implemented.
 
-LosPollos documents `{cid}` and `{sum}` in its
-[FAQ](https://www.lospollos.com/es/faq/). The remaining macros come from the
-account's Create Postback form; verify the generated smartlink in that account.
+For example, LosPollos documents `{cid}` and `{sum}` in its
+[FAQ](https://www.lospollos.com/es/faq/). Enter `cid` and `sum` in the generic
+form, leave Transaction ID and Status blank, and paste the saved URL into
+**Create Postback → Global → Postback URL**. Configure `cid={click_id}` on its
+smartlink separately, in the campaign destination. Existing callback URLs
+created with the previous preset keep working; no stored data is migrated.
 
 ## Incoming requests
 
@@ -57,6 +60,12 @@ delivery and click attribution are retried in the background. A late click may
 therefore delay campaign revenue without rejecting the conversion. Incoming
 logs show accepted, duplicate and rejected requests; errors with no authenticated
 owner may not appear in a workspace's log.
+
+The incoming log is a table with a single exact-ID search (postback, click or
+transaction ID), optional UTC date boundaries and a sortable time column.
+Filtering, sorting and pagination run on the API over all workspace records.
+`GET /api/postback-logs` accepts `id`, RFC3339 `from`/`to`, `order=asc|desc`,
+`limit` and `offset`; the previous individual filters remain supported.
 
 ## Outgoing delivery
 
@@ -108,4 +117,12 @@ persistent recovery test uses an isolated MongoDB only:
 ```sh
 cd apps/postback-service
 OUTBOUND_TEST_MONGO_URI=mongodb://127.0.0.1:27019 go test ./internal/outbound -v
+```
+
+Log filtering, chronological sorting, pagination and owner isolation also have
+an isolated MongoDB test:
+
+```sh
+cd apps/api-service
+POSTBACK_LOG_TEST_MONGO_URI=mongodb://127.0.0.1:27019 go test ./internal/postbacklogs -v
 ```

@@ -3,13 +3,11 @@ package postbacklogs
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
 	"github.com/devflex/traffoflex/apps/api-service/internal/scope"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type MongoRepository struct {
@@ -33,44 +31,51 @@ func (r *MongoRepository) List(
 	if ownerID := scope.OwnerID(ctx); ownerID != "" {
 		filter["owner_id"] = ownerID
 	}
-	total, err := r.collection.CountDocuments(
+	direction := -1
+	if query.Order == "asc" {
+		direction = 1
+	}
+	cursor, err := r.collection.Aggregate(
 		ctx,
-		filter,
+		mongo.Pipeline{
+			{{Key: "$match", Value: filter}},
+			{{Key: "$set", Value: bson.M{"_log_time": logTimestamp()}}},
+			{{Key: "$facet", Value: bson.M{
+				"rows": mongo.Pipeline{
+					{{Key: "$sort", Value: bson.D{{Key: "_log_time", Value: direction}, {Key: "_id", Value: direction}}}},
+					{{Key: "$skip", Value: query.Offset}},
+					{{Key: "$limit", Value: query.Limit}},
+				},
+				"totals": mongo.Pipeline{{{Key: "$count", Value: "count"}}},
+			}}},
+		},
 	)
 	if err != nil {
 		return Report{}, err
 	}
-	cursor, err := r.collection.Find(
+	var results []struct {
+		Rows   []bson.M `bson:"rows"`
+		Totals []struct {
+			Count int `bson:"count"`
+		} `bson:"totals"`
+	}
+	if err := cursor.All(
 		ctx,
-		filter,
-		options.Find().
-			SetSort(bson.D{{Key: "created_at", Value: -1}}).
-			SetSkip(int64(query.Offset)).
-			SetLimit(int64(query.Limit)),
-	)
-	if err != nil {
+		&results,
+	); err != nil {
 		return Report{}, err
 	}
 	rows := make([]Row, 0)
-	for cursor.Next(ctx) {
-		var raw bson.M
-		if err := cursor.Decode(&raw); err != nil {
-			if closeErr := cursor.Close(ctx); closeErr != nil {
-				return Report{}, errors.Join(
-					err,
-					closeErr,
-				)
-			}
-			return Report{}, err
-		}
+	total := 0
+	if len(results) == 0 {
+		return Report{Items: rows, Filters: query.Filters(), Limit: query.Limit, Offset: query.Offset}, nil
+	}
+	if len(results[0].Totals) > 0 {
+		total = results[0].Totals[0].Count
+	}
+	for _, raw := range results[0].Rows {
 		row, err := decodeRow(raw)
 		if err != nil {
-			if closeErr := cursor.Close(ctx); closeErr != nil {
-				return Report{}, errors.Join(
-					err,
-					closeErr,
-				)
-			}
 			return Report{}, err
 		}
 		rows = append(
@@ -78,29 +83,36 @@ func (r *MongoRepository) List(
 			row,
 		)
 	}
-	if err := cursor.Err(); err != nil {
-		if closeErr := cursor.Close(ctx); closeErr != nil {
-			return Report{}, errors.Join(
-				err,
-				closeErr,
-			)
-		}
-		return Report{}, err
-	}
-	if err := cursor.Close(ctx); err != nil {
-		return Report{}, err
-	}
 	return Report{
 		Items:   rows,
 		Filters: query.Filters(),
 		Limit:   query.Limit,
 		Offset:  query.Offset,
-		Total:   int(total),
+		Total:   total,
 	}, nil
 }
 
 func buildFilter(query Query) bson.M {
 	filter := bson.M{}
+	if query.ID != "" {
+		filter["$or"] = bson.A{bson.M{"postback_id": query.ID}, bson.M{"click_id": query.ID}, bson.M{"transaction_id": query.ID}}
+	}
+	if !query.From.IsZero() || !query.To.IsZero() {
+		conditions := bson.A{bson.M{"$ne": bson.A{logTimestamp(), nil}}}
+		if !query.From.IsZero() {
+			conditions = append(
+				conditions,
+				bson.M{"$gte": bson.A{logTimestamp(), query.From}},
+			)
+		}
+		if !query.To.IsZero() {
+			conditions = append(
+				conditions,
+				bson.M{"$lte": bson.A{logTimestamp(), query.To}},
+			)
+		}
+		filter["$expr"] = bson.M{"$and": conditions}
+	}
 	if query.NetworkID != "" {
 		filter["network_id"] = query.NetworkID
 	}
@@ -114,6 +126,11 @@ func buildFilter(query Query) bson.M {
 		filter["status"] = query.Status
 	}
 	return filter
+}
+
+// Logs use RFC3339 strings; accepting BSON dates also avoids a data migration.
+func logTimestamp() bson.M {
+	return bson.M{"$convert": bson.M{"input": "$created_at", "to": "date", "onError": nil, "onNull": nil}}
 }
 
 func decodeRow(doc bson.M) (

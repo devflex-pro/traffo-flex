@@ -55,7 +55,7 @@ import {
   AuthUser,
   setActingAsUserID
 } from "./api";
-import { incomingPostbackURL, lospollosSmartlink, generatePostbackSecret } from "./postbacks";
+import { incomingPostbackURL, generatePostbackSecret } from "./postbacks";
 import "./styles.css";
 
 const queryClient = new QueryClient();
@@ -2207,7 +2207,6 @@ function DestinationCapsEditor({
 
 type PostbackFormValues = {
   direction: "incoming" | "outgoing";
-  provider: "generic" | "lospollos";
   name: string;
   network_id: string;
   network_name: string;
@@ -2215,6 +2214,8 @@ type PostbackFormValues = {
   click_macro: string;
   transaction_macro: string;
   payout_macro: string;
+  status_macro: string;
+  currency: string;
   url: string;
   enabled: boolean;
   source_id: string;
@@ -2239,28 +2240,39 @@ function PostbacksPage() {
   const [tab, setTab] = useState<"incoming" | "outgoing">("incoming");
   const [editing, setEditing] = useState<PostbackTemplate | null>(null);
   const [open, setOpen] = useState(false);
-  const [smartlink, setSmartlink] = useState("");
   const [formError, setFormError] = useState("");
-  const [logFilters, setLogFilters] = useState({ network_id: "", click_id: "", transaction_id: "", status: "", limit: 100 });
+  const [logSearch, setLogSearch] = useState("");
+  const [logFilters, setLogFilters] = useState({ from: "", to: "", id: "", order: "desc" as "asc" | "desc", limit: 100, offset: 0 });
+  useEffect(() => {
+    const timer = window.setTimeout(() => setLogFilters(current => ({ ...current, id: logSearch.trim(), offset: 0 })), 350);
+    return () => window.clearTimeout(timer);
+  }, [logSearch]);
+  const validLogRange = !logFilters.from || !logFilters.to || logFilters.from <= logFilters.to;
+  const logQuery = {
+    ...logFilters,
+    from: logFilters.from ? new Date(`${logFilters.from}T00:00:00.000Z`).toISOString() : undefined,
+    to: logFilters.to ? new Date(`${logFilters.to}T23:59:59.999Z`).toISOString() : undefined
+  };
   const templates = useQuery({ queryKey: ["postback-templates"], queryFn: () => api.postbackTemplates({ limit: 500 }) });
   const networks = useQuery({ queryKey: ["affiliate-networks"], queryFn: api.affiliateNetworks });
   const sources = useQuery({ queryKey: ["traffic-sources"], queryFn: () => api.trafficSources({ limit: 500 }) });
   const campaigns = useQuery({ queryKey: ["campaigns", "postback-scopes"], queryFn: () => api.campaigns({ limit: 500 }) });
   const clientConfig = useQuery({ queryKey: ["client-config"], queryFn: api.clientConfig });
-  const logs = useQuery({ queryKey: ["postback-logs", logFilters], queryFn: () => api.postbackLogs(logFilters), refetchInterval: 10000 });
-  const deliveries = useQuery({ queryKey: ["outbound-postback-jobs"], queryFn: api.outboundPostbackJobs, refetchInterval: 5000 });
+  const logs = useQuery({ queryKey: ["postback-logs", logQuery], queryFn: () => api.postbackLogs(logQuery), refetchInterval: 10000, enabled: tab === "incoming" && validLogRange });
+  const deliveries = useQuery({ queryKey: ["outbound-postback-jobs"], queryFn: api.outboundPostbackJobs, refetchInterval: 5000, enabled: tab === "outgoing" });
   const form = useForm<PostbackFormValues>();
   const values = form.watch();
   const defaultValues = (template: PostbackTemplate | null, direction: "incoming" | "outgoing"): PostbackFormValues => ({
     direction: template?.direction ?? direction,
-    provider: template?.provider ?? "lospollos",
-    name: template?.name ?? (direction === "incoming" ? "LosPollos conversions" : ""),
+    name: template?.name ?? "",
     network_id: template?.network_id ?? "",
-    network_name: "LosPollos",
+    network_name: "",
     secret: template?.secret ?? generatePostbackSecret(),
     click_macro: template?.mapping.click_id ?? "cid",
-    transaction_macro: template?.mapping.transaction_id ?? "cid",
+    transaction_macro: template?.mapping.transaction_id ?? "",
     payout_macro: template?.mapping.payout ?? "sum",
+    status_macro: template?.provider === "lospollos" ? "" : template?.mapping.status ?? "",
+    currency: template?.mapping.currency ?? "USD",
     url: template?.url ?? "",
     enabled: template?.enabled ?? true,
     source_id: template?.source_id ?? "",
@@ -2269,7 +2281,6 @@ function PostbacksPage() {
   const begin = (template: PostbackTemplate | null) => {
     setEditing(template);
     form.reset(defaultValues(template, template?.direction ?? tab));
-    setSmartlink("");
     setFormError("");
     save.reset();
     setOpen(true);
@@ -2290,17 +2301,25 @@ function PostbacksPage() {
       }
       const payload: PostbackTemplateRequest = {
         direction: data.direction,
-        provider: data.direction === "incoming" ? data.provider : undefined,
+        provider: data.direction === "incoming" ? "generic" : undefined,
         network_id: networkID,
         name: data.name.trim(),
         slug: editing?.slug ?? `postback-${crypto.randomUUID().slice(0, 8)}`,
         secret: data.direction === "incoming" ? data.secret.trim() : "",
-        mapping: data.direction === "incoming" ? { click_id: data.click_macro, transaction_id: data.transaction_macro, payout: data.payout_macro, status: "status" } : {},
+        mapping: data.direction === "incoming" ? {
+          ...editing?.mapping,
+          click_id: data.click_macro.trim(),
+          transaction_id: data.transaction_macro.trim() || data.click_macro.trim(),
+          payout: data.payout_macro.trim(),
+          currency: data.currency.trim().toUpperCase(),
+          ...(data.status_macro.trim() ? { status: data.status_macro.trim() } : {})
+        } : {},
         url: data.direction === "outgoing" ? data.url.trim() : "",
         enabled: data.direction === "outgoing" ? data.enabled : true,
         source_id: data.direction === "outgoing" ? data.source_id : "",
         campaign_id: data.direction === "outgoing" ? data.campaign_id : ""
       };
+      if (data.direction === "incoming" && !data.status_macro.trim()) delete payload.mapping.status;
       return editing ? api.updatePostbackTemplate(editing.id, payload) : api.createPostbackTemplate(payload);
     },
     onSuccess: saved => {
@@ -2311,18 +2330,19 @@ function PostbacksPage() {
   });
   const remove = useMutation({ mutationFn: api.deletePostbackTemplate, onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["postback-templates"] }); } });
   const base = clientConfig.data?.postback_base_url ?? "";
-  const preview = incomingPostbackURL(base, { network_id: values.network_id ?? "", secret: values.secret, provider: values.provider, mapping: { click_id: values.click_macro ?? "cid", transaction_id: values.transaction_macro ?? "cid", payout: values.payout_macro ?? "sum" } });
+  const preview = incomingPostbackURL(base, { network_id: values.network_id ?? "", secret: values.secret, mapping: { click_id: values.click_macro?.trim() ?? "cid", transaction_id: values.transaction_macro?.trim() ?? "", payout: values.payout_macro?.trim() ?? "sum", status: values.status_macro?.trim() ?? "", currency: values.currency?.trim().toUpperCase() ?? "USD" } });
   const templateColumns: ColumnDef<PostbackTemplate>[] = [
     { header: "Name", accessorKey: "name" },
     { header: "Integration", cell: ({ row }) => row.original.direction === "outgoing" ? (row.original.enabled ? "Enabled" : "Paused") : networks.data?.items.find(network => network.id === row.original.network_id)?.name ?? row.original.network_id },
-    { header: "Scope", cell: ({ row }) => row.original.direction !== "outgoing" ? (row.original.provider === "lospollos" ? "LosPollos" : "Generic") : [sources.data?.items.find(source => source.id === row.original.source_id)?.name, campaigns.data?.items.find(campaign => campaign.id === row.original.campaign_id)?.name].filter(Boolean).join(" / ") || "Global (this workspace)" },
+    { header: "Scope", cell: ({ row }) => row.original.direction !== "outgoing" ? "This workspace" : [sources.data?.items.find(source => source.id === row.original.source_id)?.name, campaigns.data?.items.find(campaign => campaign.id === row.original.campaign_id)?.name].filter(Boolean).join(" / ") || "Global (this workspace)" },
     { header: "Actions", cell: ({ row }) => <div className="flex gap-2">
       <ActionIconButton icon="edit" label="Configure postback" onClick={() => begin(row.original)} />
       <ActionIconButton icon="delete" danger label="Delete postback" onClick={() => { if (window.confirm(`Delete ${row.original.name}?`)) remove.mutate(row.original.id); }} />
     </div> }
   ];
   const logColumns: ColumnDef<PostbackLogRow>[] = [
-    { header: "Created", cell: ({ row }) => new Date(row.original.created_at).toLocaleString() },
+    { accessorKey: "created_at", header: () => <button type="button" className="inline-flex items-center gap-1 hover:text-zinc-900" aria-label={`Sort by time · ${logFilters.order === "desc" ? "newest first" : "oldest first"}`} onClick={() => setLogFilters(current => ({ ...current, order: current.order === "desc" ? "asc" : "desc", offset: 0 }))}>Created {logFilters.order === "desc" ? "↓" : "↑"}</button>, cell: ({ row }) => <time dateTime={row.original.created_at} title={row.original.created_at}>{new Date(row.original.created_at).toLocaleString()}</time> },
+    { header: "Postback ID", accessorKey: "postback_id" },
     { header: "Network", accessorKey: "network_id" }, { header: "Click", accessorKey: "click_id" },
     { header: "Transaction", accessorKey: "transaction_id" }, { header: "Status", accessorKey: "status" }, { header: "Error", accessorKey: "error" }
   ];
@@ -2347,38 +2367,32 @@ function PostbacksPage() {
     </Panel>
     <Modal open={open} onClose={() => setOpen(false)} title={editing ? "Configure postback" : "Create postback"}>
       <form className="space-y-4" onSubmit={form.handleSubmit(data => {
-        const schema = z.object({ name: z.string().trim().min(1), secret: z.string().trim().min(1), click_macro: z.string().regex(/^[a-z][a-z0-9_]*$/i), transaction_macro: z.string().regex(/^[a-z][a-z0-9_]*$/i), payout_macro: z.string().regex(/^[a-z][a-z0-9_]*$/i) });
-        if (data.direction === "incoming" && (!schema.safeParse(data).success || (!data.network_id && !data.network_name.trim()))) { setFormError("Enter a name, affiliate network, secret and valid macro names without braces."); return; }
+        const macroName = z.string().trim().regex(/^[a-z][a-z0-9_]*$/i);
+        const optionalMacro = z.union([macroName, z.string().trim().length(0)]);
+        const schema = z.object({ name: z.string().trim().min(1), secret: z.string().trim().min(1), click_macro: macroName, transaction_macro: optionalMacro, payout_macro: macroName, status_macro: optionalMacro, currency: z.string().trim().regex(/^[a-z]{3}$/i) });
+        if (data.direction === "incoming" && (!schema.safeParse(data).success || (!data.network_id && !data.network_name.trim()))) { setFormError("Enter a name, affiliate network, secret, three-letter currency code and valid macro names without braces."); return; }
         if (data.direction === "outgoing" && (!data.name.trim() || !data.url.trim())) { setFormError("Enter a name and Postback URL."); return; }
         setFormError("");
         save.mutate(data);
       })}>
         <TextField label="Name" register={form.register("name")} />
         {values.direction === "incoming" ? <>
-          <label className="block text-sm font-medium">Integration preset<select className="input mt-1 w-full" {...form.register("provider", { onChange: event => {
-            const lospollos = event.target.value === "lospollos";
-            form.setValue("click_macro", "cid"); form.setValue("transaction_macro", lospollos ? "cid" : "tx"); form.setValue("payout_macro", "sum");
-            form.setValue("network_name", lospollos ? "LosPollos" : "");
-          } })}><option value="lospollos">LosPollos</option><option value="generic">Generic</option></select></label>
+          <p className="text-sm text-zinc-600">Choose an affiliate network and enter the macro names it uses to report conversions. Copy the generated URL into that network's postback settings.</p>
           <label className="block text-sm font-medium">Affiliate network<select className="input mt-1 w-full" {...form.register("network_id")}><option value="">Create a new affiliate network</option>{networks.data?.items.map(network => <option key={network.id} value={network.id}>{network.name}</option>)}</select></label>
           {!values.network_id ? <TextField label="New affiliate network name" register={form.register("network_name")} /> : null}
           <TextField label="Postback secret" register={form.register("secret")} />
-          <button type="button" className="button-secondary" onClick={() => form.setValue("secret", generatePostbackSecret())}>Generate secret</button>
+          <button type="button" className="button-secondary" onClick={() => form.setValue("secret", generatePostbackSecret(), { shouldDirty: true })}>Generate secret</button>
           <table className="w-full text-sm"><thead><tr><th className="text-left">Parameter</th><th className="text-left">Affiliate network macro (without braces)</th></tr></thead><tbody>
             <tr><td>Click ID</td><td><input className="input w-full" aria-label="Click ID macro" {...form.register("click_macro")} /></td></tr>
             <tr><td>Transaction ID</td><td><input className="input w-full" aria-label="Transaction ID macro" {...form.register("transaction_macro")} /></td></tr>
-            <tr><td>Payout (USD)</td><td><input className="input w-full" aria-label="Payout macro" {...form.register("payout_macro")} /></td></tr>
+            <tr><td>Payout</td><td><input className="input w-full" aria-label="Payout macro" {...form.register("payout_macro")} /></td></tr>
+            <tr><td>Status (optional)</td><td><input className="input w-full" aria-label="Status macro" placeholder="Blank = approved" {...form.register("status_macro")} /></td></tr>
           </tbody></table>
-          {values.provider === "lospollos" ? <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">LosPollos provides &#123;cid&#125; and &#123;sum&#125;. The preset uses &#123;cid&#125; as both click and transaction ID: one conversion per click. Repeated callbacks do not add revenue again.</p> : null}
-          {preview ? <CopyablePostbackURL label={values.provider === "lospollos" ? "Paste into LosPollos → Create Postback → Global → Postback URL" : "Paste into the affiliate network's Postback URL field"} value={preview} disabled={!editing || form.formState.isDirty} /> : <p className="text-sm text-zinc-600">Save the integration to generate its Postback URL.</p>}
+          <TextField label="Payout currency" register={form.register("currency")} />
+          <p className="text-xs text-zinc-600">For a network macro such as &#123;cid&#125;, enter cid. Leave Transaction ID blank if the network has no separate transaction macro: one conversion will be counted per click. Repeated callbacks with the same transaction ID do not add revenue again. A blank Status uses approved.</p>
+          {preview ? <CopyablePostbackURL label="Postback URL · copy into your affiliate network's settings" value={preview} disabled={!editing || form.formState.isDirty} /> : <p className="text-sm text-zinc-600">Save the integration to generate its Postback URL.</p>}
           {preview && (!editing || form.formState.isDirty) ? <p className="text-sm text-amber-700">Save the integration before copying this URL so the secret and affiliate network match the active settings.</p> : null}
           {!base ? <p className="text-sm text-red-700">The public postback domain is unavailable. Check API configuration.</p> : null}
-          {values.provider === "lospollos" ? <div className="space-y-2 rounded-md border border-zinc-200 p-3">
-            <label className="block text-sm font-medium">Your LosPollos smartlink<input className="input mt-1 w-full" value={smartlink} onChange={event => setSmartlink(event.target.value)} placeholder="https://your-smartlink-domain/..." /></label>
-            {smartlink && !lospollosSmartlink(smartlink) ? <p className="text-sm text-red-700">Enter a valid HTTP(S) smartlink.</p> : null}
-            <CopyablePostbackURL label="Paste this URL into the campaign's destination" value={lospollosSmartlink(smartlink)} />
-            <p className="text-xs text-zinc-600">The builder preserves your link parameters and sets cid=&#123;click_id&#125;, s1=&#123;sub1&#125; through s4=&#123;sub4&#125;.</p>
-          </div> : null}
         </> : <>
           <label className="block text-sm font-medium">Traffic source<select className="input mt-1 w-full" {...form.register("source_id")}><option value="">Global · all sources in this workspace</option>{sources.data?.items.map(source => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>
           <label className="block text-sm font-medium">Campaign<select className="input mt-1 w-full" {...form.register("campaign_id")}><option value="">All campaigns</option>{campaigns.data?.items.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}</select></label>
@@ -2401,8 +2415,20 @@ function PostbacksPage() {
       </form>
     </Modal>
     {tab === "incoming" ? <Panel title="Incoming postback log" className="mt-4">
-      <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">{(["network_id", "click_id", "transaction_id", "status"] as const).map(key => <FilterInput key={key} label={key.replace(/_/g, " ")} value={logFilters[key]} onChange={value => setLogFilters(current => ({ ...current, [key]: value }))} />)}</div>
+      <div className="mb-3 flex flex-wrap items-end gap-3">
+        <label className="min-w-64 flex-1 text-sm font-medium">Search by ID<input className="input mt-1 w-full" type="search" placeholder="Postback, click or transaction ID" value={logSearch} onChange={event => setLogSearch(event.target.value)} /></label>
+        <label className="text-sm font-medium">From (UTC)<input className="input mt-1 block" type="date" value={logFilters.from} onChange={event => setLogFilters(current => ({ ...current, from: event.target.value, offset: 0 }))} /></label>
+        <label className="text-sm font-medium">To (UTC)<input className="input mt-1 block" type="date" value={logFilters.to} onChange={event => setLogFilters(current => ({ ...current, to: event.target.value, offset: 0 }))} /></label>
+      </div>
+      {!validLogRange ? <p className="mb-3 text-sm text-red-700" role="alert">The start date must not be after the end date.</p> : null}
       <DataTable columns={logColumns} data={logs.data?.items ?? []} />
+      <div className="mt-3 flex items-center justify-between gap-3 text-sm text-zinc-600">
+        <span>{logs.isFetching ? "Loading…" : `${logs.data?.total ?? 0} postbacks`}</span>
+        <div className="flex gap-2">
+          <button type="button" className="button-secondary" disabled={logs.isFetching || !validLogRange || logFilters.offset === 0} onClick={() => setLogFilters(current => ({ ...current, offset: Math.max(0, current.offset - current.limit) }))}>Previous</button>
+          <button type="button" className="button-secondary" disabled={logs.isFetching || !validLogRange || logFilters.offset + logFilters.limit >= (logs.data?.total ?? 0)} onClick={() => setLogFilters(current => ({ ...current, offset: current.offset + current.limit }))}>Next</button>
+        </div>
+      </div>
     </Panel> : <Panel title="Outgoing delivery log · latest 100" className="mt-4">
       <p className="mb-3 text-sm text-zinc-600">Pending → sending → delivered. Failed means the receiver did not accept the request after retries, or required click data is missing.</p>
       <DataTable columns={deliveryColumns} data={deliveries.data?.items ?? []} />

@@ -297,6 +297,10 @@ export type AuthSession = {
 };
 
 export type PostbackLogFilters = {
+  id?: string;
+  from?: string;
+  to?: string;
+  order?: "asc" | "desc";
   network_id?: string;
   click_id?: string;
   transaction_id?: string;
