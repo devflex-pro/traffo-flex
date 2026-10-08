@@ -143,14 +143,14 @@ func TestPostbackSecretSelectsOwner(t *testing.T) {
 			NetworkID: "net_1",
 			Credentials: []Credential{
 				{OwnerID: "usr_1", Secret: "first"},
-				{OwnerID: "usr_2", Secret: "second"},
+				{OwnerID: "usr_2", Secret: "second", TemplateID: "pbt_2", TemplateName: "Second integration"},
 			},
 		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if conversion.OwnerID != "usr_2" {
+	if conversion.OwnerID != "usr_2" || conversion.TemplateID != "pbt_2" || conversion.TemplateName != "Second integration" {
 		t.Fatalf(
 			"owner = %q, want usr_2",
 			conversion.OwnerID,
@@ -190,5 +190,49 @@ func TestMissingRequiredFields(t *testing.T) {
 		Template{NetworkID: "demo"},
 	); err == nil {
 		t.Fatal("expected missing transaction id error")
+	}
+}
+
+func TestSharedSecretDoesNotInventIntegration(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		otherOwner   string
+		unauthorized bool
+	}{
+		{name: "same owner", otherOwner: "owner"},
+		{name: "different owner", otherOwner: "other", unauthorized: true},
+	} {
+		t.Run(
+			tc.name,
+			func(t *testing.T) {
+				conversion, err := FromGET(
+					httptest.NewRequest(
+						http.MethodGet,
+						"/pb/net?cid=clk&tx=tx&secret=shared",
+						nil,
+					),
+					Template{NetworkID: "net", Credentials: []Credential{
+						{OwnerID: "owner", Secret: "shared", TemplateID: "first", TemplateName: "First"},
+						{OwnerID: tc.otherOwner, Secret: "shared", TemplateID: "second", TemplateName: "Second"},
+					}},
+				)
+				if tc.unauthorized {
+					if err != ErrUnauthorized {
+						t.Fatalf(
+							"expected unauthorized, got %v",
+							err,
+						)
+					}
+					return
+				}
+				if err != nil || conversion.OwnerID != "owner" || conversion.TemplateID != "" || conversion.TemplateName != "" {
+					t.Fatalf(
+						"ambiguous integration: %+v, error %v",
+						conversion,
+						err,
+					)
+				}
+			},
+		)
 	}
 }

@@ -93,6 +93,8 @@ type ConversionEvent struct {
 type PostbackLogEvent struct {
 	PostbackID    string            `json:"postback_id"`
 	OwnerID       string            `json:"owner_id,omitempty"`
+	TemplateID    string            `json:"template_id,omitempty"`
+	TemplateName  string            `json:"template_name,omitempty"`
 	NetworkID     string            `json:"network_id"`
 	ClickID       string            `json:"click_id,omitempty"`
 	TransactionID string            `json:"transaction_id,omitempty"`

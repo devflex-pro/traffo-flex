@@ -59,14 +59,16 @@ func (s *MongoSecretStore) Credentials(
 	cursor, err := s.collection.Find(
 		ctx,
 		bson.M{"network_id": networkID, "direction": bson.M{"$ne": "outgoing"}},
-		options.Find().SetProjection(bson.M{"secret": 1, "owner_id": 1}),
+		options.Find().SetProjection(bson.M{"secret": 1, "owner_id": 1, "id": 1, "name": 1}),
 	)
 	if err != nil {
 		return nil, err
 	}
 	var docs []struct {
-		Secret  string `bson:"secret"`
-		OwnerID string `bson:"owner_id"`
+		Secret       string `bson:"secret"`
+		OwnerID      string `bson:"owner_id"`
+		TemplateID   string `bson:"id"`
+		TemplateName string `bson:"name"`
 	}
 	if err := cursor.All(ctx, &docs); err != nil {
 		return nil, err
@@ -75,8 +77,10 @@ func (s *MongoSecretStore) Credentials(
 	for _, doc := range docs {
 		if secret := strings.TrimSpace(doc.Secret); secret != "" {
 			credentials = append(credentials, normalize.Credential{
-				OwnerID: doc.OwnerID,
-				Secret:  secret,
+				OwnerID:      doc.OwnerID,
+				TemplateID:   doc.TemplateID,
+				TemplateName: doc.TemplateName,
+				Secret:       secret,
 			})
 		}
 	}

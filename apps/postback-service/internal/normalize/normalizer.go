@@ -15,19 +15,23 @@ var (
 )
 
 type Template struct {
-	NetworkID string
-	Secret    string
-	Secrets   []string
+	NetworkID   string
+	Secret      string
+	Secrets     []string
 	Credentials []Credential
 }
 
 type Credential struct {
-	OwnerID string
-	Secret string
+	OwnerID      string
+	Secret       string
+	TemplateID   string
+	TemplateName string
 }
 
 type Conversion struct {
 	OwnerID       string            `json:"owner_id,omitempty"`
+	TemplateID    string            `json:"template_id,omitempty"`
+	TemplateName  string            `json:"template_name,omitempty"`
 	NetworkID     string            `json:"network_id"`
 	ClickID       string            `json:"click_id"`
 	TransactionID string            `json:"transaction_id"`
@@ -95,7 +99,7 @@ func normalizePayload(
 	Conversion,
 	error,
 ) {
-	ownerID, err := validateSecret(
+	credential, err := validateSecret(
 		payload,
 		template.Secret,
 		template.Secrets,
@@ -131,7 +135,9 @@ func normalizePayload(
 	}
 
 	return Conversion{
-		OwnerID:       ownerID,
+		OwnerID:       credential.OwnerID,
+		TemplateID:    credential.TemplateID,
+		TemplateName:  credential.TemplateName,
 		NetworkID:     template.NetworkID,
 		ClickID:       clickID,
 		TransactionID: transactionID,
@@ -163,9 +169,9 @@ func validateSecret(
 	secret string,
 	secrets []string,
 	credentials []Credential,
-) (string, error) {
+) (Credential, error) {
 	if secret == "" && len(secrets) == 0 && len(credentials) == 0 {
-		return "", nil
+		return Credential{}, nil
 	}
 	got := first(
 		payload["secret"],
@@ -173,23 +179,23 @@ func validateSecret(
 		payload["key"],
 	)
 	if got == "" {
-		return "", ErrUnauthorized
+		return Credential{}, ErrUnauthorized
 	}
 	if secret != "" && subtle.ConstantTimeCompare(
 		[]byte(got),
 		[]byte(secret),
 	) == 1 {
-		return "", nil
+		return Credential{}, nil
 	}
 	for _, candidate := range secrets {
 		if candidate != "" && subtle.ConstantTimeCompare(
 			[]byte(got),
 			[]byte(candidate),
 		) == 1 {
-			return "", nil
+			return Credential{}, nil
 		}
 	}
-	ownerID := ""
+	credential := Credential{}
 	matched := false
 	for _, candidate := range credentials {
 		if candidate.Secret == "" || subtle.ConstantTimeCompare(
@@ -198,16 +204,21 @@ func validateSecret(
 		) != 1 {
 			continue
 		}
-		if matched && ownerID != candidate.OwnerID {
-			return "", ErrUnauthorized
+		if matched && credential.OwnerID != candidate.OwnerID {
+			return Credential{}, ErrUnauthorized
 		}
-		ownerID = candidate.OwnerID
+		if !matched {
+			credential = candidate
+		} else if credential.TemplateID != candidate.TemplateID {
+			// Authentication is still valid, but the integration is ambiguous.
+			credential.TemplateID, credential.TemplateName = "", ""
+		}
 		matched = true
 	}
 	if !matched {
-		return "", ErrUnauthorized
+		return Credential{}, ErrUnauthorized
 	}
-	return ownerID, nil
+	return credential, nil
 }
 
 func redactSecrets(payload map[string]string) map[string]string {

@@ -244,6 +244,8 @@ export type OutboundPostbackJob = {
 export type PostbackLogRow = {
   created_at: string;
   postback_id: string;
+  template_id?: string;
+  template_name?: string;
   network_id: string;
   click_id?: string;
   transaction_id?: string;

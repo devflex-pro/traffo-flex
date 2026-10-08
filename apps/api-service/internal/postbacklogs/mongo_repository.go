@@ -11,15 +11,18 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type MongoRepository struct {
 	collection *mongo.Collection
+	templates  *mongo.Collection
 }
 
 func NewMongoRepository(db *mongo.Database) *MongoRepository {
 	return &MongoRepository{
 		collection: db.Collection("postback_logs"),
+		templates:  db.Collection("postback_templates"),
 	}
 }
 
@@ -85,6 +88,9 @@ func (r *MongoRepository) List(
 			rows,
 			row,
 		)
+	}
+	if err := r.resolveTemplateNames(ctx, rows); err != nil {
+		return Report{}, err
 	}
 	return Report{
 		Items:   rows,
@@ -182,4 +188,54 @@ func decodeRow(doc bson.M) (
 		row.Currency = "USD"
 	}
 	return row, nil
+}
+
+// Resolve only the current page and workspace. Historical records without an
+// integration ID can be named only when the network has one incoming template.
+func (r *MongoRepository) resolveTemplateNames(
+	ctx context.Context,
+	rows []Row,
+) error {
+	ownerID := scope.OwnerID(ctx)
+	if ownerID == "" || len(rows) == 0 {
+		return nil
+	}
+	networkIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		networkIDs = append(networkIDs, row.NetworkID)
+	}
+	cursor, err := r.templates.Find(
+		ctx,
+		bson.M{"owner_id": ownerID, "network_id": bson.M{"$in": networkIDs}, "direction": bson.M{"$ne": "outgoing"}},
+		options.Find().SetProjection(bson.M{"id": 1, "name": 1, "network_id": 1}),
+	)
+	if err != nil {
+		return err
+	}
+	var templates []struct {
+		ID        string `bson:"id"`
+		Name      string `bson:"name"`
+		NetworkID string `bson:"network_id"`
+	}
+	if err := cursor.All(
+		ctx,
+		&templates,
+	); err != nil {
+		return err
+	}
+	for i := range rows {
+		matches := 0
+		id, name := "", ""
+		for _, template := range templates {
+			if template.NetworkID != rows[i].NetworkID || (rows[i].TemplateID != "" && template.ID != rows[i].TemplateID) {
+				continue
+			}
+			matches++
+			id, name = template.ID, template.Name
+		}
+		if matches == 1 {
+			rows[i].TemplateID, rows[i].TemplateName = id, name
+		}
+	}
+	return nil
 }

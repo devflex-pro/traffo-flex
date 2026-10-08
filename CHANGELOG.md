@@ -5,6 +5,16 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 
 ## [Unreleased]
 
+## [v0.1.6] - 2026-10-08
+
+### Fixed
+
+- Display incoming integration names instead of request IDs, destination names
+  in health history and filters, and keep report entity IDs in tooltips.
+- Persist the authenticated incoming integration reference and name in logs;
+  resolve historical records only when the workspace/network match is unique.
+- Preserve outgoing scope references when their configuration is unavailable.
+
 ## [v0.1.5] - 2026-10-08
 
 ### Fixed

@@ -98,6 +98,19 @@ func TestMongoLogPeriodSearchSortingAndIsolation(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+
+	if _, err := db.Collection("postback_templates").InsertMany(
+		ctx,
+		[]any{
+			bson.M{"id": "pbt_unique", "owner_id": "owner", "network_id": "net_unique", "name": "Unique integration"},
+			bson.M{"id": "pbt_out", "owner_id": "owner", "network_id": "net_unique", "direction": "outgoing", "name": "Wrong outgoing"},
+			bson.M{"id": "pbt_other", "owner_id": "other", "network_id": "net_unique", "name": "Other workspace"},
+			bson.M{"id": "pbt_first", "owner_id": "owner", "network_id": "net_many", "name": "Renamed integration"},
+			bson.M{"id": "pbt_second", "owner_id": "owner", "network_id": "net_many", "name": "Second integration"},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
 	ctx = scope.WithValue(
 		ctx,
 		scope.Value{ActorID: "owner", OwnerID: "owner"},
@@ -150,4 +163,25 @@ func TestMongoLogPeriodSearchSortingAndIsolation(t *testing.T) {
 			)
 		}
 	}
+	nameRows := []Row{
+		{NetworkID: "net_unique"},
+		{NetworkID: "net_many", TemplateID: "pbt_first", TemplateName: "Old name"},
+		{NetworkID: "net_many"},
+		{NetworkID: "net_many", TemplateID: "pbt_deleted", TemplateName: "Deleted integration"},
+		{NetworkID: "net_unique", TemplateID: "pbt_other"},
+		{NetworkID: "net_unique", TemplateID: "pbt_first"},
+	}
+	if err := repo.resolveTemplateNames(
+		ctx,
+		nameRows,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if nameRows[0].TemplateName != "Unique integration" || nameRows[0].TemplateID != "pbt_unique" || nameRows[1].TemplateName != "Renamed integration" || nameRows[2].TemplateName != "" || nameRows[3].TemplateName != "Deleted integration" || nameRows[4].TemplateName != "" || nameRows[5].TemplateName != "" {
+		t.Fatalf(
+			"incorrect or cross-workspace integration names: %+v",
+			nameRows,
+		)
+	}
+
 }

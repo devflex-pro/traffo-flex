@@ -51,6 +51,8 @@ type Report struct {
 type Row struct {
 	CreatedAt     string            `json:"created_at"`
 	PostbackID    string            `json:"postback_id"`
+	TemplateID    string            `json:"template_id,omitempty"`
+	TemplateName  string            `json:"template_name,omitempty"`
 	NetworkID     string            `json:"network_id"`
 	ClickID       string            `json:"click_id,omitempty"`
 	TransactionID string            `json:"transaction_id,omitempty"`

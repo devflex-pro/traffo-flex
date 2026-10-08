@@ -1843,7 +1843,7 @@ function DestinationsPage() {
     <Page title="Destinations">
       {healthcheckResult ? (
         <p className="mb-4 text-sm" aria-live="polite">
-          Probe {healthcheckResult.destination_id}: {healthcheckResult.status}
+          Probe {destinations.data?.items.find(destination => destination.id === healthcheckResult.destination_id)?.name ?? healthcheckResult.destination_id}: {healthcheckResult.status}
           {healthcheckResult.probe_status_code ? ` (HTTP ${healthcheckResult.probe_status_code})` : ""}
           {healthcheckResult.error ? ` — ${healthcheckResult.error}` : ""}.
           Failures: {healthcheckResult.consecutive_failures}; successes: {healthcheckResult.consecutive_successes}.
@@ -2334,7 +2334,7 @@ function PostbacksPage() {
   const templateColumns: ColumnDef<PostbackTemplate>[] = [
     { header: "Name", accessorKey: "name" },
     { header: "Integration", cell: ({ row }) => row.original.direction === "outgoing" ? (row.original.enabled ? "Enabled" : "Paused") : networks.data?.items.find(network => network.id === row.original.network_id)?.name ?? row.original.network_id },
-    { header: "Scope", cell: ({ row }) => row.original.direction !== "outgoing" ? "This workspace" : [sources.data?.items.find(source => source.id === row.original.source_id)?.name, campaigns.data?.items.find(campaign => campaign.id === row.original.campaign_id)?.name].filter(Boolean).join(" / ") || "Global (this workspace)" },
+    { header: "Scope", cell: ({ row }) => row.original.direction !== "outgoing" ? "This workspace" : [sources.data?.items.find(source => source.id === row.original.source_id)?.name ?? row.original.source_id, campaigns.data?.items.find(campaign => campaign.id === row.original.campaign_id)?.name ?? row.original.campaign_id].filter(Boolean).join(" / ") || "Global (this workspace)" },
     { header: "Actions", cell: ({ row }) => <div className="flex gap-2">
       <ActionIconButton icon="edit" label="Configure postback" onClick={() => begin(row.original)} />
       <ActionIconButton icon="delete" danger label="Delete postback" onClick={() => { if (window.confirm(`Delete ${row.original.name}?`)) remove.mutate(row.original.id); }} />
@@ -2342,7 +2342,7 @@ function PostbacksPage() {
   ];
   const logColumns: ColumnDef<PostbackLogRow>[] = [
     { accessorKey: "created_at", header: () => <button type="button" className="inline-flex items-center gap-1 hover:text-zinc-900" aria-label={`Sort by time · ${logFilters.order === "desc" ? "newest first" : "oldest first"}`} onClick={() => setLogFilters(current => ({ ...current, order: current.order === "desc" ? "asc" : "desc", offset: 0 }))}>Created {logFilters.order === "desc" ? "↓" : "↑"}</button>, cell: ({ row }) => <time dateTime={row.original.created_at} title={row.original.created_at}>{new Date(row.original.created_at).toLocaleString()}</time> },
-    { header: "Postback ID", accessorKey: "postback_id" },
+    { header: "Postback", cell: ({ row }) => <span title={`Request ID: ${row.original.postback_id}${row.original.template_id ? ` · Integration ID: ${row.original.template_id}` : ""}`}>{row.original.template_name || templates.data?.items.find(template => template.id === row.original.template_id)?.name || "Unknown integration"}</span> },
     { header: "Network", cell: ({ row }) => <span title={row.original.network_id}>{networks.data?.items.find(network => network.id === row.original.network_id)?.name ?? row.original.network_id}</span> },
     { header: "Payout", cell: ({ row }) => row.original.payout == null ? "—" : <span className="whitespace-nowrap tabular-nums">{row.original.payout.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 8 })} {row.original.currency}</span> },
     { header: "Click", accessorKey: "click_id" },
@@ -2350,7 +2350,7 @@ function PostbacksPage() {
   ];
   const deliveryColumns: ColumnDef<OutboundPostbackJob>[] = [
     { header: "Created", cell: ({ row }) => new Date(row.original.created_at).toLocaleString() },
-    { header: "Postback", cell: ({ row }) => templates.data?.items.find(template => template.id === row.original.template_id)?.name ?? row.original.template_id },
+    { header: "Postback", cell: ({ row }) => <span title={row.original.template_id}>{templates.data?.items.find(template => template.id === row.original.template_id)?.name ?? row.original.template_id}</span> },
     { header: "Click", accessorKey: "click_id" }, { header: "Status", accessorKey: "status" },
     { header: "Attempts", accessorKey: "attempts" }, { header: "HTTP", cell: ({ row }) => row.original.http_status || "—" }, { header: "Error", accessorKey: "error" }
   ];
@@ -2444,6 +2444,10 @@ function HealthHistoryPage() {
     current: "",
     limit: 100
   });
+  const destinations = useQuery({
+    queryKey: ["health-destination-lookup"],
+    queryFn: () => api.destinations({ limit: 500 })
+  });
   const history = useQuery({
     queryKey: [
       "health-history",
@@ -2457,7 +2461,7 @@ function HealthHistoryPage() {
         header: "Checked",
         cell: ({ row }) => new Date(row.original.checked_at).toLocaleString()
       },
-      { header: "Destination", accessorKey: "destination_id" },
+      { header: "Destination", cell: ({ row }) => <span title={row.original.destination_id}>{destinations.data?.items.find(destination => destination.id === row.original.destination_id)?.name ?? row.original.destination_id}</span> },
       { header: "Previous", accessorKey: "previous" },
       { header: "Current", accessorKey: "current" },
       {
@@ -2467,18 +2471,19 @@ function HealthHistoryPage() {
         )
       }
     ],
-    []
+    [destinations.data]
   );
 
   return (
     <Page title="Health History">
       <Panel title="Destination health transitions">
         <div className="mb-4 grid grid-cols-3 gap-3">
-          <FilterInput
-            label="Destination"
-            onChange={(value) => setFilters((current) => ({ ...current, destination_id: value }))}
-            value={filters.destination_id}
-          />
+          <label className="grid gap-1 text-sm">Destination
+            <select className="input" value={filters.destination_id} onChange={event => setFilters(current => ({ ...current, destination_id: event.target.value }))}>
+              <option value="">All destinations</option>
+              {destinations.data?.items.map(destination => <option key={destination.id} value={destination.id}>{destination.name}</option>)}
+            </select>
+          </label>
           <FilterInput
             label="Current"
             onChange={(value) => setFilters((current) => ({ ...current, current: value }))}
@@ -2602,10 +2607,11 @@ function ReportsPage() {
     () =>
       (report.data?.rows ?? []).map((row) => ({
         ...row,
-        name: nameLookup[row.id] ?? humanizeID(row.name || row.id)
+        name: nameLookup[row.id] ?? (["trafficback", "health"].includes(group) ? humanizeID(row.name || row.id) : row.name || row.id)
       })),
     [
       nameLookup,
+      group,
       report.data
     ]
   );
@@ -2615,8 +2621,7 @@ function ReportsPage() {
         header: "Name",
         cell: ({ row }) => (
           <div>
-            <div className="font-medium text-zinc-950">{row.original.name || row.original.id}</div>
-            <div className="mt-1 text-xs text-zinc-500">{row.original.id}</div>
+            <div className="font-medium text-zinc-950" title={row.original.id}>{row.original.name || row.original.id}</div>
           </div>
         )
       },

@@ -23,7 +23,7 @@ func (testOwnerSecretStore) Credentials(
 	ctx context.Context,
 	networkID string,
 ) ([]normalize.Credential, error) {
-	return []normalize.Credential{{OwnerID: "usr_1", Secret: "valid"}}, nil
+	return []normalize.Credential{{OwnerID: "usr_1", Secret: "valid", TemplateID: "pbt_1", TemplateName: "Primary integration"}}, nil
 }
 
 func (testSecretStore) Secrets(
@@ -43,7 +43,7 @@ func TestHandlerLogsAcceptedPostback(t *testing.T) {
 			nil,
 		),
 		logs,
-		testSecretStore{},
+		testOwnerSecretStore{},
 	)
 	router := chi.NewRouter()
 	router.Get(
@@ -53,7 +53,7 @@ func TestHandlerLogsAcceptedPostback(t *testing.T) {
 
 	req := httptest.NewRequest(
 		http.MethodGet,
-		"/pb/demo?cid=clk_1&tx=tx_1&secret=test-secret",
+		"/pb/demo?cid=clk_1&tx=tx_1&secret=valid",
 		nil,
 	)
 	rr := httptest.NewRecorder()
@@ -76,7 +76,7 @@ func TestHandlerLogsAcceptedPostback(t *testing.T) {
 			len(events),
 		)
 	}
-	if events[0].Status != "accepted" {
+	if events[0].Status != "accepted" || events[0].TemplateID != "pbt_1" || events[0].TemplateName != "Primary integration" {
 		t.Fatalf(
 			"Status = %q, want accepted",
 			events[0].Status,
