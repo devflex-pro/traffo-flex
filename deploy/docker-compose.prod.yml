@@ -95,6 +95,7 @@ services:
     logging: *logging
 
   clickhouse:
+    hostname: ${CLICKHOUSE_HOSTNAME:-clickhouse}
     image: ghcr.io/devflex-pro/traffo-flex-clickhouse:${IMAGE_TAG:?Set IMAGE_TAG to a published release tag}
     restart: unless-stopped
     environment:

@@ -87,6 +87,7 @@ export type Campaign = {
   status: Status;
   traffic_source_id?: string;
   currency?: string;
+  pricing_model?: "cpc" | "cpm";
   default_action?: string;
   trafficback_config: TrafficbackConfig;
   tracking_params?: TrackingParam[] | null;
@@ -120,6 +121,7 @@ export type CampaignRequest = {
   status: Status;
   traffic_source_id?: string;
   currency?: string;
+  pricing_model?: "cpc" | "cpm";
   default_action?: string;
   trafficback_config: TrafficbackConfig;
 };

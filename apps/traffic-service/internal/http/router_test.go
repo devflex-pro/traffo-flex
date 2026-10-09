@@ -16,6 +16,7 @@ import (
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/availability"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/cache"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/clickaudit"
+	"github.com/devflex/traffoflex/apps/traffic-service/internal/clicklog"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/eventqueue"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/healthcheck"
 	"github.com/devflex/traffoflex/apps/traffic-service/internal/trafficevents"
@@ -163,6 +164,64 @@ func TestCampaignRouteRedirects(t *testing.T) {
 			"unexpected Location header %q",
 			got,
 		)
+	}
+}
+
+func TestCampaignPricingAppliesToEveryEntrypoint(t *testing.T) {
+	campaigns := cache.DemoCampaigns()
+	campaigns[0].Campaign.PricingModel = models.PricingCPM
+	campaigns[0].Destinations[0].URL = "https://example.com/?cost={cost}"
+	campaigns[0].Streams[0].Conditions = []models.Condition{{
+		Field:    "cost",
+		Operator: models.OperatorEQ,
+		Value:    "0.0025",
+	}}
+	sink := clicklog.NewMemorySink()
+	store := cache.NewStore(cache.StaticLoader{Campaigns: campaigns})
+	if err := store.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouterWithOptions(
+		testLogger(),
+		Options{
+			Cache:       store,
+			ClickLogger: clicklog.NewSinkLogger(sink),
+		},
+	)
+	for _, path := range []string{"/c/demo", "/go/demo-public", "/r/demo-token"} {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(
+			response,
+			httptest.NewRequest(
+				stdhttp.MethodGet,
+				path+"?cost=2.5&pricing_model=cpc",
+				nil,
+			),
+		)
+		if response.Code != stdhttp.StatusFound || response.Header().Get("Location") != "https://example.com/?cost=0.0025" {
+			t.Fatalf(
+				"%s returned %d %q",
+				path,
+				response.Code,
+				response.Header().Get("Location"),
+			)
+		}
+	}
+	events := sink.Events()
+	if len(events) != 3 {
+		t.Fatalf(
+			"logged events = %d, want 3",
+			len(events),
+		)
+	}
+	for _, event := range events {
+		if event.Cost != 0.0025 || event.Query["cost"] != "2.5" {
+			t.Fatalf(
+				"normalized cost/raw price = %v/%q",
+				event.Cost,
+				event.Query["cost"],
+			)
+		}
 	}
 }
 

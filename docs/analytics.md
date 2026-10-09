@@ -37,7 +37,7 @@ In the table, `query.x` means `click_events.query`, a JSON string containing nor
 | Connection type | `source_connection_type=[CONNECTION_TYPE]` | `query.source_connection_type` | Report dimension `connection_type` (Connection type) |
 | Source campaign ID | `source_campaign_id=[CAMPAIGN_ID]` | `query.source_campaign_id` | Report dimension `source_campaign_id` |
 | Source campaign name | `source_campaign_name=[CAMPAIGN_NAME]` | `query.source_campaign_name` | Report dimension `source_campaign_name` |
-| CPV price | `source_cpv_price=[CPV_PRICE]` | `query.source_cpv_price`, unchanged source string | Raw click events only; **does not set expense** |
+| Cost macro | `cost=YOUR_PRICE_MACRO`, for example `[CPV_PRICE]` | Raw/query value is unchanged; `cost` column stores normalized click expense | Cost, profit, ROI and expense caps |
 | Source IP | `source_ip=[IP]` | `query.source_ip`, unchanged source string | Raw click events only; **not trusted visitor IP** |
 
 `[COUNTRY]` can return a country name; `[COUNTRY_CODE]` in RichPops returns a three-letter code. Neither is automatically converted into a two-letter country code. Set the macro and rule/filter values consistently. RichPops does not advertise every optional macro above: do not enable unsupported placeholders such as `[DEVICE]` without an actual source equivalent.
@@ -49,6 +49,24 @@ A campaign's configured traffic source becomes `click_events.source_id` and the 
 Old links using `sub1`/`sub2`/`sub3`/`sub4` continue to work. They map to zone/publisher/site/creative respectively, and named parameters take precedence when both are present. Explicit old sub values remain in the original sub columns. New named links do not populate those columns artificially; existing destination `{sub1}`–`{sub4}` macros and rule values fall back to the named values when a sub is absent.
 
 Open and save an existing campaign's URL builder to migrate its saved tracking parameters to the named form. Previously copied URLs remain compatible. Custom optional macro values are preserved.
+
+### Pricing and spend
+
+Choose **Pricing model** in Create/Edit campaign: CPC records incoming `cost`
+unchanged; CPM records `cost / 1000` for each tracked click. `cost=2.5` with
+CPM adds `0.0025` per click, or `25` for 10,000 clicks. Existing campaigns
+without the setting use CPC. Changes apply to subsequent clicks after the
+routing cache refresh; historical costs remain unchanged.
+
+Set the source price macro in **Cost macro** in Tracking URL builder, for
+example `cost=[CPV_PRICE]`. The separate raw CPV field is retired. Existing
+`source_cpv_price` links still preserve that parameter without setting expense;
+edit the builder and choose the campaign model before sending it as `cost`.
+Missing, unresolved, negative or non-finite prices record zero expense. Legacy
+`cpc`, `price`, `bid` and `spend` aliases remain supported, with `cost` taking
+precedence; all use the campaign model. Inbound query parameters cannot
+override that model. Normalization occurs before rules, destination macros
+and click logging, so reports, caps and ROI consume the same click expense.
 
 ### Inspect raw values
 
@@ -75,7 +93,7 @@ Reports use daily aggregates for full UTC days, hourly aggregates for full hours
 
 Conversions are deduplicated by owner and conversion ID, with compact attributed events providing campaign/stream/destination/source references. GEO/device/placement conversion reports join the compact click lookup using both owner and click ID, not the full raw click history. Unattributed conversions are included in unfiltered totals and Unknown dimension rows; they appear in entity/known-dimension segments after attribution succeeds.
 
-Click broker replays can still add clicks/cost more than once. The existing duplicate audit reports these cases; this release does not change click deduplication or rebuild duplicates silently. Mixed currencies and CPM/CPV unit conversion are not implemented by this report update. Revenue and cost must use consistent units to interpret profit and ROI.
+Click broker replays can still add clicks/cost more than once. The existing duplicate audit reports these cases; this release does not change click deduplication or rebuild duplicates silently. Mixed-currency conversion is not implemented. Revenue and cost must use consistent currencies to interpret profit and ROI.
 
 ## API
 

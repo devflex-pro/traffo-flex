@@ -611,7 +611,6 @@ const sourceOptionalMacros = [
   { label: "Connection type", param: "source_connection_type", macro: "[CONNECTION_TYPE]" },
   { label: "Source campaign ID", param: "source_campaign_id", macro: "[CAMPAIGN_ID]" },
   { label: "Source campaign name", param: "source_campaign_name", macro: "[CAMPAIGN_NAME]" },
-  { label: "CPV price (source value)", param: "source_cpv_price", macro: "[CPV_PRICE]" },
   { label: "Source IP (raw only)", param: "source_ip", macro: "[IP]" }
 ] as const;
 
@@ -696,6 +695,7 @@ function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
   const [zoneID, setZoneID] = useState(initialValue("zone_id") || initialValue("source_id"));
   const [country, setCountry] = useState(initialValue("geo_country"));
   const [clickID, setClickID] = useState(initialValue("clickid") || initialValue("utm_content"));
+  const [cost, setCost] = useState(initialValue("cost"));
   const [macroValues, setMacroValues] = useState<Record<string, string>>(() => Object.fromEntries(sourceOptionalMacros.map(macro => [macro.param, initialValue(macro.param) || macro.macro])));
   const [optionalParams, setOptionalParams] = useState<string[]>(
     sourceOptionalMacros.filter((macro) => initialParams.some((param) => param.key === macro.param || param.key === legacyTrackingKeys[macro.param])).map((macro) => macro.param)
@@ -706,7 +706,8 @@ function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
     { key: "zone_id", value: zoneID },
     { key: "geo_country", value: country },
     { key: "clickid", value: clickID },
-    { key: "utm_content", value: clickID }
+    { key: "utm_content", value: clickID },
+    { key: "cost", value: cost }
   ];
   for (const macro of sourceOptionalMacros) {
     if (optionalParams.includes(macro.param)) {
@@ -757,6 +758,14 @@ function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
           <p>The campaign's traffic source and zone are separate: the source is taken from campaign settings, and the zone is stored as zone_id.</p>
         ) : null}
       </div>
+      <label className="block text-sm font-medium">
+        Cost macro
+        <input className="input mt-1 font-mono" onChange={event => setCost(event.target.value)} value={cost} placeholder="[CPV_PRICE]" />
+        <span className="mt-1 block text-xs font-normal text-zinc-500">
+          cost · Use the price macro supported by your source, for example [CPV_PRICE] for RichAds.
+          {campaign.pricing_model === "cpm" ? " CPM: incoming price ÷ 1000 per click." : " CPC: incoming price per click."}
+        </span>
+      </label>
       <details className="rounded-md border border-zinc-200 p-3">
         <summary className="cursor-pointer text-sm font-medium">Optional source macros</summary>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -773,7 +782,7 @@ function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
         </div>
         <p className="mt-3 text-xs text-zinc-500">Use macros supported by your traffic source. Edit optional values when its macro names differ.</p>
         <p className="mt-3 text-xs text-zinc-500">
-          CPV price is stored exactly as provided by the source and is not used as click cost. Check its unit in the source settings. The source IP is stored as raw data and is not trusted as the visitor IP.
+          The source IP is stored as raw data and is not trusted as the visitor IP.
         </p>
       </details>
       <label className="block text-sm font-medium">
@@ -1163,6 +1172,7 @@ function campaignRequestWithStatus(campaign: Campaign, status: Status): Campaign
     status,
     traffic_source_id: campaign.traffic_source_id,
     currency: campaign.currency,
+    pricing_model: campaign.pricing_model ?? "cpc",
     default_action: campaign.default_action,
     trafficback_config: campaign.trafficback_config
   };
@@ -1211,6 +1221,7 @@ function CampaignForm({
       status: initial?.status ?? "paused",
       traffic_source_id: initial?.traffic_source_id ?? "",
       currency: initial?.currency ?? "USD",
+      pricing_model: initial?.pricing_model ?? "cpc",
       default_action: initial?.default_action ?? "",
       trafficback_config: {
         enabled: initial?.trafficback_config?.enabled ?? false,
@@ -1241,6 +1252,17 @@ function CampaignForm({
       <TextField label="Name" register={form.register("name")} />
       <TextField label="Slug" register={form.register("slug")} />
       <TextField label="Currency" register={form.register("currency")} />
+      <label className="block text-sm font-medium">
+        Pricing model
+        <select className="input mt-1" {...form.register("pricing_model")}>
+          <option value="cpc">CPC · per click</option>
+          <option value="cpm">CPM · per 1000</option>
+        </select>
+      </label>
+      <p className="text-xs text-zinc-500">
+        {form.watch("pricing_model") === "cpm" ? "Click expense = incoming cost ÷ 1000." : "Click expense = incoming cost."}
+        {" "}Set the cost macro in Tracking URL builder. Changes apply to new clicks.
+      </p>
       <SelectField label="Status" options={statusOptions} register={form.register("status")} />
       <label className="flex items-center gap-2 text-sm font-medium">
         <input type="checkbox" {...form.register("trafficback_config.enabled")} />
@@ -3261,6 +3283,7 @@ const campaignSchema = z.object({
     "archived"
   ]),
   currency: z.string().regex(/^[A-Z]{3}$/),
+  pricing_model: z.enum(["cpc", "cpm"]),
   trafficback_config: z.object({
     enabled: z.boolean(),
     url: z.string(),

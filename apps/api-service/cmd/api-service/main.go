@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"time"
+	_ "time/tzdata" // Embed report timezones in the minimal production image.
 
 	"github.com/devflex/traffoflex/apps/api-service/internal/affiliatenetworks"
 	"github.com/devflex/traffoflex/apps/api-service/internal/auth"

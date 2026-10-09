@@ -27,6 +27,106 @@ func TestServiceCreateValidatesInput(t *testing.T) {
 	}
 }
 
+func TestCampaignPricingDefaultsAndUpdates(t *testing.T) {
+	service := NewService(NewMemoryRepository())
+	ctx := context.Background()
+	req := CampaignRequest{
+		Name:   "Pricing campaign",
+		Slug:   "pricing-campaign",
+		Status: models.StatusPaused,
+	}
+	campaign, err := service.Create(
+		ctx,
+		req,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaign.PricingModel != models.PricingCPC {
+		t.Fatalf(
+			"default pricing = %q, want cpc",
+			campaign.PricingModel,
+		)
+	}
+	req.PricingModel = models.PricingCPM
+	campaign, err = service.Update(
+		ctx,
+		campaign.ID,
+		req,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.PricingModel = ""
+	req.Status = models.StatusArchived
+	campaign, err = service.Update(
+		ctx,
+		campaign.ID,
+		req,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaign.PricingModel != models.PricingCPM {
+		t.Fatal("omitted pricing model reset CPM on status change")
+	}
+	campaign, err = service.UpdateTrackingParams(
+		ctx,
+		campaign.ID,
+		[]models.TrackingParam{{Key: "cost", Value: "[CPV_PRICE]"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaign.PricingModel != models.PricingCPM {
+		t.Fatal("tracking URL update reset CPM")
+	}
+	req.PricingModel = models.PricingCPC
+	campaign, err = service.Update(
+		ctx,
+		campaign.ID,
+		req,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaign.PricingModel != models.PricingCPC {
+		t.Fatal("explicit CPC did not replace CPM")
+	}
+	for _, invalid := range []models.PricingModel{"cpv", "CPM", "unknown"} {
+		req.PricingModel = invalid
+		_, err := service.Create(
+			ctx,
+			req,
+		)
+		if !errors.Is(
+			err,
+			ErrInvalidInput,
+		) {
+			t.Fatalf(
+				"create with pricing %q returned %v",
+				invalid,
+				err,
+			)
+		}
+		_, err = service.Update(
+			ctx,
+			campaign.ID,
+			req,
+		)
+		if !errors.Is(
+			err,
+			ErrInvalidInput,
+		) {
+			t.Fatalf(
+				"update with pricing %q returned %v",
+				invalid,
+				err,
+			)
+		}
+	}
+}
+
 func TestServiceCRUD(t *testing.T) {
 	service := NewService(NewMemoryRepository())
 	ctx := context.Background()

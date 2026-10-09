@@ -24,6 +24,7 @@ type CampaignRequest struct {
 	Status          models.Status             `json:"status"`
 	TrafficSourceID string                    `json:"traffic_source_id,omitempty"`
 	Currency        string                    `json:"currency,omitempty"`
+	PricingModel    models.PricingModel       `json:"pricing_model,omitempty"`
 	DefaultAction   string                    `json:"default_action,omitempty"`
 	Trafficback     *models.TrafficbackConfig `json:"trafficback_config,omitempty"`
 }
@@ -132,6 +133,9 @@ func (s *Service) Create(
 	if strings.TrimSpace(req.Currency) == "" {
 		req.Currency = "USD"
 	}
+	if req.PricingModel == "" {
+		req.PricingModel = models.PricingCPC
+	}
 	if err := validateRequest(req); err != nil {
 		return models.Campaign{}, err
 	}
@@ -151,6 +155,7 @@ func (s *Service) Create(
 		Status:            req.Status,
 		TrafficSourceID:   strings.TrimSpace(req.TrafficSourceID),
 		Currency:          strings.ToUpper(strings.TrimSpace(req.Currency)),
+		PricingModel:      req.PricingModel,
 		DefaultAction:     strings.TrimSpace(req.DefaultAction),
 		TrafficbackConfig: trafficback,
 		CreatedAt:         now,
@@ -195,6 +200,9 @@ func (s *Service) Update(
 	existing.Status = req.Status
 	existing.TrafficSourceID = strings.TrimSpace(req.TrafficSourceID)
 	existing.Currency = strings.ToUpper(strings.TrimSpace(req.Currency))
+	if req.PricingModel != "" {
+		existing.PricingModel = req.PricingModel
+	}
 	existing.DefaultAction = strings.TrimSpace(req.DefaultAction)
 	if req.Trafficback != nil {
 		existing.TrafficbackConfig = normalizeTrafficback(req.Trafficback)
@@ -312,6 +320,12 @@ func validateTrackingParams(params []models.TrackingParam) error {
 }
 
 func validateRequest(req CampaignRequest) error {
+	if req.PricingModel != "" && !req.PricingModel.Valid() {
+		return errors.Join(
+			ErrInvalidInput,
+			errors.New("pricing model must be cpc or cpm"),
+		)
+	}
 	if strings.TrimSpace(req.Name) == "" {
 		return errors.Join(
 			ErrInvalidInput,

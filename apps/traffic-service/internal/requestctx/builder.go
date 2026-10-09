@@ -1,6 +1,7 @@
 package requestctx
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -31,6 +32,7 @@ type Input struct {
 	StreamID      string
 	DestinationID string
 	SourceID      string
+	PricingModel  models.PricingModel
 }
 
 func NewBuilder(ipResolver *clientip.Resolver) *Builder {
@@ -149,13 +151,16 @@ func (b *Builder) Build(
 			Content:  q.Get("utm_content"),
 			Term:     q.Get("utm_term"),
 		},
-		Cost: parseCost(first(
-			q.Get("cost"),
-			q.Get("cpc"),
-			q.Get("price"),
-			q.Get("bid"),
-			q.Get("spend"),
-		)),
+		Cost: parseCost(
+			first(
+				q.Get("cost"),
+				q.Get("cpc"),
+				q.Get("price"),
+				q.Get("bid"),
+				q.Get("spend"),
+			),
+			input.PricingModel,
+		),
 		Currency:         q.Get("currency"),
 		RawQuery:         r.URL.RawQuery,
 		Query:            query,
@@ -245,7 +250,10 @@ func ClickEvent(
 	}
 }
 
-func parseCost(value string) float64 {
+func parseCost(
+	value string,
+	pricingModel models.PricingModel,
+) float64 {
 	if value == "" {
 		return 0
 	}
@@ -253,8 +261,14 @@ func parseCost(value string) float64 {
 		value,
 		64,
 	)
-	if err != nil {
+	if err != nil || cost < 0 || math.IsNaN(cost) || math.IsInf(
+		cost,
+		0,
+	) {
 		return 0
+	}
+	if pricingModel == models.PricingCPM {
+		return cost / 1000
 	}
 	return cost
 }

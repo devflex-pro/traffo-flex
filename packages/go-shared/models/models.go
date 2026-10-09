@@ -176,6 +176,17 @@ type TrackingParam struct {
 	Value string `json:"value"`
 }
 
+type PricingModel string
+
+const (
+	PricingCPC PricingModel = "cpc"
+	PricingCPM PricingModel = "cpm"
+)
+
+func (m PricingModel) Valid() bool {
+	return m == PricingCPC || m == PricingCPM
+}
+
 type Campaign struct {
 	ID                string            `json:"id"`
 	OwnerID           string            `json:"owner_id,omitempty"`
@@ -189,6 +200,7 @@ type Campaign struct {
 	CustomDomain      string            `json:"custom_domain,omitempty"`
 	TrafficSourceID   string            `json:"traffic_source_id,omitempty"`
 	Currency          string            `json:"currency,omitempty"`
+	PricingModel      PricingModel      `json:"pricing_model,omitempty"`
 	DefaultAction     string            `json:"default_action,omitempty"`
 	TrafficbackConfig TrafficbackConfig `json:"trafficback_config"`
 	TrackingParams    []TrackingParam   `json:"tracking_params"`

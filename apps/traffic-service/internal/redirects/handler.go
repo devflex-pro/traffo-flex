@@ -162,7 +162,12 @@ func (h *Handler) redirectCampaign(
 	clickID := ids.New("clk")
 	baseCtx := h.builder.Build(
 		r,
-		requestctx.Input{ClickID: clickID, CampaignID: campaign.Campaign.ID, OwnerID: campaign.Campaign.OwnerID},
+		requestctx.Input{
+			ClickID:      clickID,
+			CampaignID:   campaign.Campaign.ID,
+			OwnerID:      campaign.Campaign.OwnerID,
+			PricingModel: campaign.Campaign.PricingModel,
+		},
 	)
 	stream, err := h.rules.MatchStream(
 		campaign.Streams,
@@ -239,14 +244,18 @@ func (h *Handler) redirectCampaign(
 		return
 	}
 
-	redirectCtx := h.builder.Build(r, requestctx.Input{
-		ClickID:       clickID,
-		OwnerID:       campaign.Campaign.OwnerID,
-		CampaignID:    campaign.Campaign.ID,
-		StreamID:      stream.ID,
-		DestinationID: destination.ID,
-		SourceID:      campaign.Campaign.TrafficSourceID,
-	})
+	redirectCtx := h.builder.Build(
+		r,
+		requestctx.Input{
+			ClickID:       clickID,
+			OwnerID:       campaign.Campaign.OwnerID,
+			CampaignID:    campaign.Campaign.ID,
+			StreamID:      stream.ID,
+			DestinationID: destination.ID,
+			SourceID:      campaign.Campaign.TrafficSourceID,
+			PricingModel:  campaign.Campaign.PricingModel,
+		},
+	)
 	targetURL := macros.Render(destination.URL, map[string]string{
 		"click_id": clickID,
 	})
@@ -409,7 +418,12 @@ func (h *Handler) redirectTrafficback(
 	)
 	ctx := h.builder.Build(
 		r,
-		requestctx.Input{ClickID: clickID, CampaignID: campaign.Campaign.ID, OwnerID: campaign.Campaign.OwnerID},
+		requestctx.Input{
+			ClickID:      clickID,
+			CampaignID:   campaign.Campaign.ID,
+			OwnerID:      campaign.Campaign.OwnerID,
+			PricingModel: campaign.Campaign.PricingModel,
+		},
 	)
 	values := requestctx.Values(ctx)
 	values["trafficback_reason"] = string(reason)

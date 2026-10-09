@@ -86,6 +86,20 @@ staging directory and review its Compose and infra changes before switching
 `current`. Keep `.env.production`, `/opt/infra/.env`, certificates and Docker
 volumes outside the bundle.
 
+Keep `CLICKHOUSE_HOSTNAME` stable across upgrades. Fresh installs default to
+`clickhouse`. Existing Replicated databases created before v0.1.8 must retain
+their registered hostname before recreating ClickHouse. Read the single-node
+identity with `SELECT name, value FROM system.zookeeper WHERE
+path='/clickhouse/databases/traffoflex/replicas'`; the value starts with
+`hostname:9000:`. Changing it can leave database DDL read-only while table
+healthchecks pass. Preserve the original hostname and replica metadata.
+
+v0.1.8 adds CPC/CPM configuration without changing the analytics schema or
+rewriting historical costs. Before rolling back to an older tracker after
+enabling CPM campaigns, pause those campaigns: older images record incoming
+prices without dividing by 1000. The API image now embeds timezone data and
+does not require the temporary host zoneinfo mount used with older images.
+
 ### 2. Configure domains, start the shared proxy and issue certificates
 
 Choose an unused subnet. The example reserves `172.30.240.10` for Nginx, so

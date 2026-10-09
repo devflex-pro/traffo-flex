@@ -7,7 +7,67 @@ import (
 	"time"
 
 	"github.com/devflex/traffoflex/packages/go-shared/clientip"
+	"github.com/devflex/traffoflex/packages/go-shared/models"
 )
+
+func TestBuildNormalizesCampaignPricing(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		query string
+		model models.PricingModel
+		want  float64
+	}{
+		{name: "legacy defaults to CPC", query: "cost=2.5", want: 2.5},
+		{name: "CPC", query: "cost=2.5", model: models.PricingCPC, want: 2.5},
+		{name: "CPM", query: "cost=2.5", model: models.PricingCPM, want: 0.0025},
+		{name: "query cannot override CPM", query: "cost=2.5&pricing_model=cpc", model: models.PricingCPM, want: 0.0025},
+		{name: "query cannot enable CPM", query: "cost=2.5&pricing_model=cpm", model: models.PricingCPC, want: 2.5},
+		{name: "cost takes precedence", query: "cost=2.5&cpc=7", model: models.PricingCPM, want: 0.0025},
+		{name: "legacy alias", query: "price=2.5", model: models.PricingCPM, want: 0.0025},
+		{name: "raw source CPV stays raw", query: "source_cpv_price=2.5", model: models.PricingCPM},
+		{name: "missing price", query: "", model: models.PricingCPM},
+		{name: "unresolved macro", query: "cost=%5BCPV_PRICE%5D", model: models.PricingCPM},
+		{name: "negative", query: "cost=-2.5", model: models.PricingCPM},
+		{name: "NaN", query: "cost=NaN", model: models.PricingCPM},
+		{name: "infinity", query: "cost=Inf", model: models.PricingCPM},
+		{name: "overflow", query: "cost=1e999", model: models.PricingCPM},
+	} {
+		t.Run(
+			test.name,
+			func(t *testing.T) {
+				request := httptest.NewRequest(
+					"GET",
+					"/c/demo?"+test.query,
+					nil,
+				)
+				ctx := NewBuilder(nil).Build(
+					request,
+					Input{PricingModel: test.model},
+				)
+				if ctx.Cost != test.want || ctx.RawQuery != test.query {
+					t.Fatalf(
+						"cost/raw query = %v/%q, want %v/%q",
+						ctx.Cost,
+						ctx.RawQuery,
+						test.want,
+						test.query,
+					)
+				}
+				event := ClickEvent(
+					ctx,
+					time.Now(),
+				)
+				if event.Cost != test.want {
+					t.Fatalf(
+						"event cost = %v, want %v",
+						event.Cost,
+						test.want,
+					)
+				}
+			},
+		)
+	}
+}
 
 func TestBuildNormalizesKnownFields(t *testing.T) {
 	resolver := clientip.NewResolver(

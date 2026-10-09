@@ -5,6 +5,24 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 
 ## [Unreleased]
 
+## [v0.1.8] - 2026-10-09
+
+### Added
+
+- Campaign CPC/CPM pricing selector. CPM divides the incoming price by 1000
+  before recording click expense; existing campaigns default to CPC and
+  historical expenses remain unchanged.
+- Cost macro in Tracking URL builder, supporting `cost=[CPV_PRICE]`; remove
+  the separate raw CPV price field.
+
+### Fixed
+
+- Preserve pricing on campaign status and tracking parameter changes; reject
+  unsupported pricing models and negative or non-finite incoming prices.
+- Keep the production ClickHouse hostname stable across container recreation,
+  with an override for existing registered replica identities.
+- Embed named timezone data in the API image.
+
 ## [v0.1.7] - 2026-10-09
 
 ### Added
