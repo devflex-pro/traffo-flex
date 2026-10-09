@@ -112,3 +112,7 @@ POST /api/postbacks
 GET /healthz
 GET /readyz
 ```
+
+## Report explorer
+
+`GET /api/reports/grouped?group_by=geo_country` supports campaign/stream/destination/source and 15 GEO/device/placement dimensions. It returns paginated rows, matching totals and row count. Filters, sorting, row conditions and timezone/date semantics are documented in [Analytics](analytics.md#api). Existing report routes remain available.

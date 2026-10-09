@@ -120,7 +120,7 @@ The MVP schema includes:
 - `conversion_events`
 - `click_attribution_lookup`
 - `attributed_conversion_events`
-- `click_stats_1m`, `click_stats_1h`
+- `click_stats_1h`, `click_stats_1d`
 - `postback_log_events`
 - `trafficback_events`
 - `destination_health_events`
@@ -128,9 +128,9 @@ The MVP schema includes:
 The older `clicks`, `conversions` and `postback_logs` tables remain for compatibility with early schema drafts. New application code should write the `*_events` tables.
 
 Application services publish analytics events to Redpanda topics. ClickHouse consumes those topics through Kafka engine queue tables and materialized views from `004_kafka_ingestion.sql`.
-The click materialized views in `006_click_rollups.sql` aggregate `click_events` directly by minute, then by hour across campaign, stream, destination and source. Reports use hourly or minute buckets; requested time bounds are rounded outward to whole minutes for both clicks and conversions. Background destination caps and ROI use minute buckets and include the boundary minute, so a cap can trigger up to 59 seconds early. Minute buckets update as clicks arrive; they do not wait for the minute to end. Query rollups with `sum(clicks)` and `sum(cost)` because `SummingMergeTree` merges matching rows asynchronously.
+Click materialized views aggregate raw clicks directly into hourly statistics, then daily UTC statistics, retaining GEO/device/placement dimensions. Minute aggregation is retired. Reports use whole-hour/day aggregates and raw partial-hour boundaries; caps and ROI use complete hours plus the raw boundary hour in background workers. See [Analytics](analytics.md) for filter semantics and the full builder mapping. Query `sum(clicks)` and `sum(cost)` because SummingMergeTree merges matching rows asynchronously.
 Conversions remain in the compact attributed event table and are deduplicated by `conversion_id` in report queries. At the expected one conversion per second, this avoids a `SummingMergeTree` conversion rollup that would count broker replays twice after an uncertain acknowledgement.
-Click reports remain on fast additive minute/hour rollups. `traffic-service` runs a background duplicate audit on startup and every 24 hours over yesterday and today in UTC. If WAL records were recovered at startup, it waits until they are delivered, then audits their full event-date range after a one-minute ingestion grace period and repeats five minutes later. The private `/internal/click-audit/stats` endpoint shows `daily` and `recovery` results, recovered click count, pending recovery check, and failures. Alert on any `duplicate_events`, `conflicting_click_ids`, `error`, or stale `checked_at`. `excess_cost` is the sum of repeated costs after retaining the lowest cost per `click_id`; when costs or attribution fields conflict, investigate the flagged IDs before treating that amount as exact. This audit does not rewrite rollups or slow redirects. If it finds duplicates, inspect the affected period and plan a controlled rebuild of minute/hour rollups before using them for exact billing.
+Click reports remain on fast additive hour/day rollups. `traffic-service` runs a background duplicate audit on startup and every 24 hours over yesterday and today in UTC. If WAL records were recovered at startup, it waits until they are delivered, then audits their full event-date range after a one-minute ingestion grace period and repeats five minutes later. The private `/internal/click-audit/stats` endpoint shows `daily` and `recovery` results, recovered click count, pending recovery check, and failures. Alert on any `duplicate_events`, `conflicting_click_ids`, `error`, or stale `checked_at`. `excess_cost` is the sum of repeated costs after retaining the lowest cost per `click_id`; when costs or attribution fields conflict, investigate the flagged IDs before treating that amount as exact. This audit does not rewrite rollups or slow redirects. If it finds duplicates, inspect the affected period and plan a controlled rebuild of hour/day rollups before using them for exact billing.
 Redpanda auto-create topics is disabled in local compose; `redpanda-init` owns topic creation.
 
 Default event topics:
@@ -150,30 +150,11 @@ Useful query:
 docker compose -f deploy/docker-compose.yml exec clickhouse clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --database traffoflex --query "SELECT observed_at, topic, error FROM kafka_ingestion_errors ORDER BY observed_at DESC LIMIT 20"
 ```
 
-For existing volumes, inspect the old click view chain before applying SQL. If `click_events_to_stats_1s` exists, follow the empty-volume or populated-volume procedure below first; applying `006_click_rollups.sql` alongside the old chain double-counts minute totals. Then apply the needed new SQL manually:
+For existing volumes, stop traffic writers, take a full volume backup, and use the controlled [hour/day migration procedure](analytics.md#migrating-an-existing-clickhouse-volume). Do not apply the fresh-init SQL blindly over old aggregate tables. The migration script verifies retained raw history, preserves old tables, backfills dimensions and aggregates, checks count/cost and supports a pre-traffic rollback. Existing MongoDB volumes also need the `conversions_pending_attribution` index from `deploy/mongo/init/001_indexes.js`. Existing conversions without `attribution_status` need a deliberate one-time backfill if they should appear in attributed reports.
 
-```bash
-docker compose -f deploy/docker-compose.yml exec -T clickhouse clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --database traffoflex < deploy/clickhouse/init/003_mvp_event_tables.sql
-docker compose -f deploy/docker-compose.yml exec -T clickhouse clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --database traffoflex < deploy/clickhouse/init/004_kafka_ingestion.sql
-docker compose -f deploy/docker-compose.yml exec -T clickhouse clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --database traffoflex < deploy/clickhouse/init/005_click_attribution.sql
-docker compose -f deploy/docker-compose.yml exec -T clickhouse clickhouse-client --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" --database traffoflex < deploy/clickhouse/init/006_click_rollups.sql
-```
+The initial expected volume is 10,000–50,000 clicks/day. The earlier 1,000-click/s ceiling would mean 86.4 million clicks/day if sustained; it is a stress target, not the launch forecast. In an isolated synthetic run with one million clicks before rollups were added, `system.parts` reported 141.9 bytes per row in `click_events` and 39.2 bytes per row in `click_attribution_lookup`. Most optional fields were empty, so real traffic, Redpanda retention, logs, MongoDB and backups will use more space. A point lookup took about 5 ms and a join over 86,400 synthetic conversions about 67 ms inside ClickHouse. These are query measurements, not an end-to-end load test. Measure real bytes per click including the hour and day rollups and set a safe retention and backup policy before scaling traffic on a 180 GB VPS. No automatic ClickHouse TTL is enabled yet.
 
-The new materialized views process only clicks inserted after their creation. On an existing ClickHouse volume with the old second-based views, **do not apply `006_click_rollups.sql` while the old chain is active**: both paths would add the same clicks to `click_stats_1m`. First inspect `SELECT count() FROM click_events`, `click_stats_1m` and `click_stats_1h`. If all three are empty, stop ingestion, drop `click_events_to_stats_1s` and `click_stats_1s_to_stats_1m`, drop the unused `click_stats_1s` table, apply the new `006_click_rollups.sql`, then resume ingestion. If any table has data, preserve it and plan a bounded backfill from `click_events` into the minute rollup while ingestion is paused; verify raw count/cost against both rollups before switching readers. This repository does not run destructive DDL or backfill automatically. Existing MongoDB volumes also need the `conversions_pending_attribution` index from `deploy/mongo/init/001_indexes.js`. Existing conversions without `attribution_status` need a deliberate one-time backfill if they should appear in attributed reports.
-
-On a verified empty volume, run these statements only after stopping click ingestion:
-
-```sql
-DROP VIEW IF EXISTS traffoflex.click_events_to_stats_1s;
-DROP VIEW IF EXISTS traffoflex.click_stats_1s_to_stats_1m;
-DROP TABLE IF EXISTS traffoflex.click_stats_1s;
-```
-
-Then apply `006_click_rollups.sql`. The existing `click_stats_1m` and `click_stats_1h` tables remain in place.
-
-The initial expected volume is 10,000–50,000 clicks/day. The earlier 1,000-click/s ceiling would mean 86.4 million clicks/day if sustained; it is a stress target, not the launch forecast. In an isolated synthetic run with one million clicks before rollups were added, `system.parts` reported 141.9 bytes per row in `click_events` and 39.2 bytes per row in `click_attribution_lookup`. Most optional fields were empty, so real traffic, Redpanda retention, logs, MongoDB and backups will use more space. A point lookup took about 5 ms and a join over 86,400 synthetic conversions about 67 ms inside ClickHouse. These are query measurements, not an end-to-end load test. Measure real bytes per click including the minute and hour rollups and set a safe retention and backup policy before scaling traffic on a 180 GB VPS. No automatic ClickHouse TTL is enabled yet.
-
-An earlier isolated run of the retired second-based rollup chain sent one million synthetic clicks across 100 destinations at 1,000 clicks/s. Its results do not validate the new direct minute view. Re-run ingestion and cap benchmarks against the current schema before using those measurements for capacity planning.
+An earlier isolated run of the retired second-based rollup chain sent one million synthetic clicks across 100 destinations at 1,000 clicks/s. Its results do not validate the current hour/day chain. Re-run ingestion and cap benchmarks against the current schema before using those measurements for capacity planning.
 
 If `conversion_events` already exists without `source_id`, apply the additive column and recreate the Kafka ingestion objects before restarting ingestion:
 

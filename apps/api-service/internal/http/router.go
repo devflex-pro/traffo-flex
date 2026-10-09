@@ -460,6 +460,10 @@ func registerProtectedRoutes(
 		reportHandler.Daily,
 	)
 	r.Get(
+		"/reports/grouped",
+		reportHandler.Grouped,
+	)
+	r.Get(
 		"/reports/campaigns",
 		reportHandler.Campaigns,
 	)

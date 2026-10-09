@@ -18,14 +18,14 @@ import (
 
 const (
 	clickEventsTable       = "click_events"
-	clickStatsMinuteTable  = "click_stats_1m"
+	clickStatsDayTable     = "click_stats_1d"
 	clickStatsHourTable    = "click_stats_1h"
 	conversionEventsTable  = "conversion_events"
-	conversionReportSource = `(SELECT c.created_at AS created_at, c.payout AS payout, c.owner_id AS owner_id,
+	conversionReportSource = `(SELECT c.created_at AS created_at, c.payout AS payout, c.owner_id AS owner_id, c.click_id AS click_id,
   k.campaign_id AS campaign_id, k.stream_id AS stream_id,
   k.destination_id AS destination_id, k.source_id AS source_id
 FROM (SELECT owner_id, conversion_id, any(created_at) AS created_at,
-  any(payout) AS payout FROM conversion_events GROUP BY owner_id, conversion_id) AS c
+  any(payout) AS payout, any(click_id) AS click_id FROM conversion_events GROUP BY owner_id, conversion_id) AS c
 LEFT ANY JOIN (SELECT owner_id, conversion_id, any(campaign_id) AS campaign_id,
   any(stream_id) AS stream_id, any(destination_id) AS destination_id,
   any(source_id) AS source_id FROM attributed_conversion_events GROUP BY owner_id, conversion_id) AS k
@@ -139,7 +139,30 @@ func (r *ClickHouseRepository) Grouped(
 		summary.ROI = summary.Profit / summary.Cost * 100
 	}
 
+	total := len(reportRows)
+	if groupBy != GroupByTrafficback && groupBy != GroupByHealth {
+		totals, err := r.queryMetrics(
+			ctx,
+			groupedTotalsSQL(
+				groupBy,
+				query,
+			),
+		)
+		if err != nil {
+			return GroupedReport{}, err
+		}
+		if len(totals) > 0 {
+			summary, total = totals[0].Metrics(), totals[0].TotalRows
+		}
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = defaultReportLimit
+	}
 	return GroupedReport{
+		Total:   total,
+		Limit:   limit,
+		Offset:  query.Offset,
 		GroupBy: string(groupBy),
 		Summary: summary,
 		Rows:    reportRows,
@@ -329,6 +352,7 @@ type metricRow struct {
 	Profit      float64 `json:"profit"`
 	ROI         float64 `json:"roi"`
 	Events      int     `json:"events"`
+	TotalRows   int     `json:"total_rows"`
 }
 
 func (r *metricRow) UnmarshalJSON(payload []byte) error {
@@ -342,6 +366,7 @@ func (r *metricRow) UnmarshalJSON(payload []byte) error {
 		Profit      json.RawMessage `json:"profit"`
 		ROI         json.RawMessage `json:"roi"`
 		Events      json.RawMessage `json:"events"`
+		TotalRows   json.RawMessage `json:"total_rows"`
 	}
 	if err := json.Unmarshal(
 		payload,
@@ -350,6 +375,11 @@ func (r *metricRow) UnmarshalJSON(payload []byte) error {
 		return err
 	}
 
+	totalRows, err := parseFlexibleInt(raw.TotalRows)
+	if err != nil {
+		return err
+	}
+	r.TotalRows = totalRows
 	clicks, err := parseFlexibleInt(raw.Clicks)
 	if err != nil {
 		return err
@@ -380,6 +410,7 @@ func (r *metricRow) UnmarshalJSON(payload []byte) error {
 	}
 
 	*r = metricRow{
+		TotalRows:   totalRows,
 		ID:          raw.ID,
 		Name:        raw.Name,
 		Clicks:      clicks,
@@ -509,7 +540,10 @@ func decodeIngestionErrorRows(body []byte) (
 }
 
 func buildOverviewSQL(query Query) string {
-	clickTable, clickCount := clickReportSource(query, false)
+	clickTable, clickCount := clickReportSource(
+		query,
+		false,
+	)
 	clickWhere := buildWhereClause(
 		clickTable,
 		query,
@@ -536,7 +570,10 @@ FORMAT JSONEachRow`,
 		clickCount,
 		clickTable,
 		clickWhere,
-		conversionReportSource,
+		conversionSource(
+			query,
+			"",
+		),
 		conversionWhere,
 	)
 }
@@ -558,52 +595,155 @@ func buildGroupedSQL(
 			"current",
 			query,
 		)
-	default:
-		column := reportGroupColumn(groupBy)
-		clickTable, clickCount := clickReportSource(query, false)
-		clickWhere := buildWhereClause(
-			clickTable,
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = defaultReportLimit
+	}
+	return fmt.Sprintf(
+		"%s\n%s\nORDER BY %s\nLIMIT %d OFFSET %d\nFORMAT JSONEachRow",
+		groupedCoreSQL(
+			groupBy,
 			query,
-		)
-		conversionWhere := buildWhereClause(
-			conversionEventsTable,
-			query,
-		)
-		return fmt.Sprintf(
-			`SELECT id, id AS name, clicks, conversions, revenue, cost, revenue - cost AS profit, if(cost = 0, 0, (revenue - cost) / cost * 100) AS roi
-FROM (
-	SELECT id, sum(clicks) AS clicks, sum(conversions) AS conversions, sum(revenue) AS revenue, sum(cost) AS cost
-	FROM (
-		SELECT %s AS id, %s AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
-		FROM %s
-		%s
-		GROUP BY id
-		UNION ALL
-		SELECT %s AS id, 0 AS clicks, count() AS conversions, sum(payout) AS revenue, 0.0 AS cost
-		FROM %s
-		%s
-		GROUP BY id
+		),
+		groupedRowFilters(query),
+		reportRowOrder(query),
+		limit,
+		query.Offset,
 	)
-	WHERE id != ''
-	GROUP BY id
-)
-ORDER BY clicks DESC, conversions DESC
-LIMIT %d
-FORMAT JSONEachRow`,
-			column,
-			clickCount,
+}
+
+func groupedCoreSQL(
+	groupBy GroupBy,
+	query Query,
+) string {
+	column := reportGroupColumn(groupBy)
+	clickTable, clickCount := clickReportSource(
+		query,
+		false,
+	)
+	clickWhere := buildWhereClause(
+		clickTable,
+		query,
+	)
+	conversionWhere := buildWhereClause(
+		conversionEventsTable,
+		query,
+	)
+	return fmt.Sprintf(
+		`SELECT id, if(id = '', 'Unknown', id) AS name, clicks, conversions, revenue, cost,
+revenue - cost AS profit, if(cost = 0, 0, (revenue - cost) / cost * 100) AS roi
+FROM (
+    SELECT id, sum(clicks) AS clicks, sum(conversions) AS conversions, sum(revenue) AS revenue, sum(cost) AS cost
+    FROM (
+        SELECT %s AS id, %s AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
+        FROM %s
+        %s
+        GROUP BY id
+        UNION ALL
+        SELECT %s AS id, 0 AS clicks, count() AS conversions, sum(payout) AS revenue, 0.0 AS cost
+        FROM %s
+        %s
+        GROUP BY id
+    )
+    GROUP BY id
+)`,
+		reportDimensionExpression(
 			clickTable,
-			clickWhere,
 			column,
-			conversionReportSource,
-			conversionWhere,
-			defaultReportLimit,
+		),
+		clickCount,
+		clickTable,
+		clickWhere,
+		column,
+		conversionSource(
+			query,
+			groupBy,
+		),
+		conversionWhere,
+	)
+}
+
+func groupedTotalsSQL(
+	groupBy GroupBy,
+	query Query,
+) string {
+	return fmt.Sprintf(
+		`SELECT count() AS total_rows, sum(clicks) AS clicks, sum(conversions) AS conversions,
+sum(revenue) AS revenue, sum(cost) AS cost, revenue - cost AS profit,
+if(cost = 0, 0, profit / cost * 100) AS roi
+FROM (%s %s) FORMAT JSONEachRow`,
+		groupedCoreSQL(
+			groupBy,
+			query,
+		),
+		groupedRowFilters(query),
+	)
+}
+
+func conversionSource(
+	query Query,
+	group GroupBy,
+) string {
+	if !isReportDimension(string(group)) && !hasDimensionFilters(query) {
+		return conversionReportSource
+	}
+	// Bound the lookup to conversion click IDs in the requested workspace and
+	// period. Do not scan raw click history or duplicate conversion revenue.
+	identityQuery := Query{OwnerID: query.OwnerID, From: query.From, To: query.To}
+	where := buildWhereClause(
+		conversionEventsTable,
+		identityQuery,
+	)
+	lookupWhere := ""
+	if query.OwnerID != "" {
+		lookupWhere = "owner_id = " + quoteString(query.OwnerID) + " AND "
+	}
+	fields := make(
+		[]string,
+		0,
+		len(reportDimensions),
+	)
+	aggregates := make(
+		[]string,
+		0,
+		len(reportDimensions),
+	)
+	for _, field := range reportDimensions {
+		fields = append(
+			fields,
+			"d."+field+" AS "+field,
+		)
+		aggregates = append(
+			aggregates,
+			"any("+field+") AS "+field,
 		)
 	}
+	return fmt.Sprintf(
+		`(SELECT c.*, %s FROM %s AS c
+LEFT ANY JOIN (SELECT owner_id, click_id, %s FROM click_attribution_lookup
+WHERE %sclick_id IN (SELECT click_id FROM conversion_events %s)
+GROUP BY owner_id, click_id) AS d
+ON c.owner_id = d.owner_id AND c.click_id = d.click_id)`,
+		strings.Join(
+			fields,
+			", ",
+		),
+		conversionReportSource,
+		strings.Join(
+			aggregates,
+			", ",
+		),
+		lookupWhere,
+		where,
+	)
 }
 
 func buildDailySQL(query Query) string {
-	clickTable, clickCount := clickReportSource(query, true)
+	clickTable, clickCount := clickReportSource(
+		query,
+		true,
+	)
 	clickWhere := buildWhereClause(
 		clickTable,
 		query,
@@ -637,7 +777,10 @@ FORMAT JSONEachRow`,
 		clickTable,
 		clickWhere,
 		timezone,
-		conversionReportSource,
+		conversionSource(
+			query,
+			"",
+		),
 		conversionWhere,
 	)
 }
@@ -646,11 +789,23 @@ func clickReportSource(
 	query Query,
 	daily bool,
 ) (string, string) {
-	if !daily && (query.From.IsZero() || query.From.Minute() == 0) &&
-		(query.To.IsZero() || query.To.Minute() == 59) {
-		return clickStatsHourTable, "sum(clicks)"
+	from, to := query.From.UTC(), query.To.UTC()
+	// Daily buckets are UTC. Other timezones use events for the daily chart so
+	// half-hour offsets and daylight saving boundaries remain exact.
+	if daily && query.Timezone != "" && query.Timezone != "UTC" && query.Timezone != "Etc/UTC" {
+		return clickEventsTable, "count()"
 	}
-	return clickStatsMinuteTable, "sum(clicks)"
+	wholeStart := from.IsZero() || (from.Minute() == 0 && from.Second() == 0 && from.Nanosecond() == 0)
+	wholeEnd := to.IsZero() || (to.Minute() == 59 && to.Second() == 59)
+	if !wholeStart || !wholeEnd {
+		return clickEventsTable, "count()"
+	}
+	wholeDayStart := from.IsZero() || from.Hour() == 0
+	wholeDayEnd := to.IsZero() || to.Hour() == 23
+	if wholeDayStart && wholeDayEnd {
+		return clickStatsDayTable, "sum(clicks)"
+	}
+	return clickStatsHourTable, "sum(clicks)"
 }
 
 func buildIngestionErrorsSQL(query IngestionErrorsQuery) string {
@@ -669,7 +824,10 @@ FORMAT JSONEachRow`,
 }
 
 func buildIngestionErrorsWhereClause(query IngestionErrorsQuery) string {
-	conditions := make([]string, 0)
+	conditions := make(
+		[]string,
+		0,
+	)
 	if !query.From.IsZero() {
 		conditions = append(
 			conditions,
@@ -749,6 +907,9 @@ func reportGroupColumn(groupBy GroupBy) string {
 	case GroupBySource:
 		return "source_id"
 	default:
+		if isReportDimension(string(groupBy)) {
+			return string(groupBy)
+		}
 		return "campaign_id"
 	}
 }
@@ -763,18 +924,21 @@ func buildWhereClause(
 		6,
 	)
 	if query.OwnerID != "" {
-		conditions = append(conditions, "owner_id = "+quoteString(query.OwnerID))
+		conditions = append(
+			conditions,
+			"owner_id = "+quoteString(query.OwnerID),
+		)
 	}
 	if !query.From.IsZero() {
 		conditions = append(
 			conditions,
-			"created_at >= "+quoteTime(query.From.UTC().Truncate(time.Minute)),
+			"created_at >= "+quoteTime(reportLowerBound(query.From)),
 		)
 	}
 	if !query.To.IsZero() {
 		conditions = append(
 			conditions,
-			"created_at <= "+quoteTime(query.To.UTC().Truncate(time.Minute).Add(time.Minute-time.Second)),
+			"created_at <= "+quoteTime(query.To.UTC()),
 		)
 	}
 	if supportsFilter(
@@ -813,6 +977,34 @@ func buildWhereClause(
 			"source_id = "+quoteString(query.SourceID),
 		)
 	}
+	for _, field := range reportDimensions {
+		if value, exists := query.Dimensions[field]; exists && supportsFilter(
+			table,
+			field,
+		) {
+			conditions = append(
+				conditions,
+				reportDimensionExpression(
+					table,
+					field,
+				)+" = "+quoteString(value),
+			)
+		}
+	}
+	for _, field := range query.EmptyFields {
+		if supportsFilter(
+			table,
+			field,
+		) {
+			conditions = append(
+				conditions,
+				reportDimensionExpression(
+					table,
+					field,
+				)+" = ''",
+			)
+		}
+	}
 	if len(conditions) == 0 {
 		return ""
 	}
@@ -827,13 +1019,13 @@ func supportsFilter(
 	field string,
 ) bool {
 	switch table {
-	case clickEventsTable, clickStatsMinuteTable, clickStatsHourTable:
-		return field == "campaign_id" ||
+	case clickEventsTable, clickStatsDayTable, clickStatsHourTable:
+		return isReportDimension(field) || field == "campaign_id" ||
 			field == "stream_id" ||
 			field == "destination_id" ||
 			field == "source_id"
 	case conversionEventsTable:
-		return field == "campaign_id" ||
+		return isReportDimension(field) || field == "campaign_id" ||
 			field == "stream_id" ||
 			field == "destination_id" ||
 			field == "source_id"
@@ -846,6 +1038,13 @@ func supportsFilter(
 	default:
 		return false
 	}
+}
+
+func reportLowerBound(value time.Time) time.Time {
+	if value.Nanosecond() > 0 {
+		return value.UTC().Truncate(time.Second).Add(time.Second)
+	}
+	return value.UTC()
 }
 
 func quoteTime(value time.Time) string {
@@ -863,6 +1062,11 @@ func appendWhereCondition(
 }
 
 func quoteString(value string) string {
+	value = strings.ReplaceAll(
+		value,
+		"\\",
+		"\\\\",
+	)
 	return "'" + strings.ReplaceAll(
 		value,
 		"'",

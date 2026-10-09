@@ -207,3 +207,54 @@ func TestValuesIncludesQueryAndMacroValues(t *testing.T) {
 		)
 	}
 }
+
+func TestNamedTrackingParametersPreserveLegacyLinksAndMacros(t *testing.T) {
+	builder := NewBuilder(nil)
+	for _, tc := range []struct {
+		name       string
+		query      string
+		namedZone  string
+		legacyZone string
+	}{
+		{name: "named only", query: "zone_id=z&publisher_id=p&site_id=s&creative_id=c", namedZone: "z"},
+		{name: "legacy", query: "sub1=z&sub2=p&sub3=s&sub4=c", namedZone: "z", legacyZone: "z"},
+		{name: "named wins", query: "zone_id=z&publisher_id=p&site_id=s&creative_id=c&sub1=old", namedZone: "z", legacyZone: "old"},
+	} {
+		t.Run(
+			tc.name,
+			func(t *testing.T) {
+				ctx := builder.Build(
+					httptest.NewRequest(
+						"GET",
+						"/c/demo?"+tc.query,
+						nil,
+					),
+					Input{ClickID: "click", SourceID: "source"},
+				)
+				if ctx.SourceID != "source" || ctx.Query["zone_id"] != tc.namedZone || ctx.Query["publisher_id"] != "p" || ctx.Query["site_id"] != "s" || ctx.Query["creative_id"] != "c" || ctx.RawQuery != tc.query || ctx.SubIDs[0] != tc.legacyZone {
+					t.Fatalf(
+						"incorrect named/legacy context: %+v",
+						ctx,
+					)
+				}
+				event := ClickEvent(
+					ctx,
+					time.Now(),
+				)
+				if event.Query["zone_id"] != "z" || event.SubIDs[0] != tc.legacyZone {
+					t.Fatalf(
+						"analytics metadata changed: %+v",
+						event,
+					)
+				}
+				values := Values(ctx)
+				if values["zone_id"] != "z" || values["publisher_id"] != "p" || values["site_id"] != "s" || values["creative_id"] != "c" || values["sub2"] != "p" {
+					t.Fatalf(
+						"named or compatible destination macros missing: %+v",
+						values,
+					)
+				}
+			},
+		)
+	}
+}

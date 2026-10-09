@@ -36,6 +36,8 @@ jobs:
           VITE_API_BASE_URL: ""
       - name: Installer syntax
         run: |
+          bash -n scripts/migrate-hour-day-rollups.sh
+          bash -n scripts/test-analytics.sh
           bash -n scripts/install-prod.sh
           bash -n scripts/render-nginx-prod.sh
           bash scripts/install-prod.sh --help >/dev/null
@@ -69,6 +71,17 @@ jobs:
           docker compose -f deploy/docker-compose.prod.yml config --quiet
           docker compose -f deploy/infra/compose.yml config --quiet
 
+  analytics-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: ClickHouse reports and migration
+        run: bash scripts/test-analytics.sh
+
   release-notes:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -83,7 +96,7 @@ jobs:
 
   images:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [tests, release-notes]
+    needs: [tests, analytics-integration, release-notes]
     runs-on: ubuntu-latest
     permissions:
       contents: read

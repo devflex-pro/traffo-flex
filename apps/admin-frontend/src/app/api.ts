@@ -39,6 +39,9 @@ export type ReportRow = {
 };
 
 export type GroupedReport = {
+  total?: number;
+  limit?: number;
+  offset?: number;
   group_by: string;
   summary: Metrics;
   rows: ReportRow[];
@@ -46,6 +49,14 @@ export type GroupedReport = {
 };
 
 export type ReportFilters = {
+  [key: string]: string | number | undefined;
+  empty?: string;
+  sort?: string;
+  order?: string;
+  limit?: number;
+  offset?: number;
+  min_clicks?: number;
+  profit?: string;
   from?: string;
   to?: string;
   timezone?: string;
@@ -460,6 +471,7 @@ export const api = {
     group: string,
     filters: ReportFilters = {}
   ) => request<GroupedReport>(`/api/reports/${group}${queryString(filters)}`),
+  groupedReport: (group: string, filters: ReportFilters = {}) => request<GroupedReport>(`/api/reports/grouped${queryString({ ...filters, group_by: group })}`),
   ingestionErrors: () => request<IngestionErrorsReport>("/api/reports/ingestion-errors"),
   campaigns: (filters: ListFilters = {}) =>
     request<ListResponse<Campaign>>(`/api/campaigns${queryString(filters)}`),

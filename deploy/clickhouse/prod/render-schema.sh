@@ -18,7 +18,7 @@ for number in 002 003 004 005 006; do
     fi
     target_file="$target_dir/$(basename "$source_file")"
     awk '
-        /^CREATE TABLE IF NOT EXISTS traffoflex\./ || /^TO traffoflex\./ || /^FROM traffoflex\./ {
+        /^CREATE TABLE IF NOT EXISTS traffoflex\./ || /^CREATE TABLE.* AS traffoflex\./ || /^TO traffoflex\./ || /^FROM traffoflex\./ {
             if (match($0, /traffoflex\.[A-Za-z0-9_]+/)) {
                 table = substr($0, RSTART + 11, RLENGTH - 11)
                 if (table !~ /_queue$/) {
@@ -30,6 +30,7 @@ for number in 002 003 004 005 006; do
         /^ENGINE = SummingMergeTree$/ { $0 = "ENGINE = ReplicatedSummingMergeTree" }
         {
             gsub(/redpanda-0:9092,redpanda-1:9092,redpanda-2:9092/, "redpanda-0:9092")
+            gsub(/AS traffoflex.click_stats_1h$/, "AS traffoflex.click_stats_1h_local")
             print
         }
     ' "$source_file" > "$target_file"
@@ -63,8 +64,8 @@ CREATE TABLE IF NOT EXISTS traffoflex.click_attribution_lookup AS traffoflex.cli
 ENGINE = Distributed('traffoflex_cluster', 'traffoflex', 'click_attribution_lookup_local', cityHash64(click_id));
 CREATE TABLE IF NOT EXISTS traffoflex.attributed_conversion_events AS traffoflex.attributed_conversion_events_local
 ENGINE = Distributed('traffoflex_cluster', 'traffoflex', 'attributed_conversion_events_local', cityHash64(click_id));
-CREATE TABLE IF NOT EXISTS traffoflex.click_stats_1m AS traffoflex.click_stats_1m_local
-ENGINE = Distributed('traffoflex_cluster', 'traffoflex', 'click_stats_1m_local', cityHash64(campaign_id));
 CREATE TABLE IF NOT EXISTS traffoflex.click_stats_1h AS traffoflex.click_stats_1h_local
 ENGINE = Distributed('traffoflex_cluster', 'traffoflex', 'click_stats_1h_local', cityHash64(campaign_id));
+CREATE TABLE IF NOT EXISTS traffoflex.click_stats_1d AS traffoflex.click_stats_1d_local
+ENGINE = Distributed('traffoflex_cluster', 'traffoflex', 'click_stats_1d_local', cityHash64(campaign_id));
 SQL

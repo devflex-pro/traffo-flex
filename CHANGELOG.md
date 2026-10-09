@@ -5,6 +5,26 @@ published. Before pushing a release tag, move them to a dated `vX.Y.Z` section.
 
 ## [Unreleased]
 
+## [v0.1.7] - 2026-10-09
+
+### Added
+
+- Report explorer with three grouping levels, segment drill-down, breadcrumbs,
+  period/timezone and entity/GEO/device/placement filters, server sorting and
+  pagination, profitable/unprofitable rows and CR/CPC/EPC/CPA metrics.
+- Owner-isolated conversion attribution for 15 additional report dimensions,
+  ClickHouse integration tests and a reversible, verified aggregate migration.
+
+### Changed
+
+- Use named zone/publisher/site/creative tracking parameters in the URL builder;
+  preserve legacy sub links, destination macros and custom source macro values.
+- Add region/city source macros and document every builder parameter and its
+  raw storage, normalization and availability in reports.
+- Replace minute click aggregation with hour and UTC-day statistics, preserving
+  dimensions and exact report/cap boundaries through raw partial-hour reads.
+- Label source CPV as its unchanged source value; it is not yet click expense.
+
 ## [v0.1.6] - 2026-10-08
 
 ### Fixed

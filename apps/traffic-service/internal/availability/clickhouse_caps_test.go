@@ -48,18 +48,18 @@ func TestClickHouseCapCheckerExceeded(t *testing.T) {
 	}
 	if !strings.Contains(
 		doer.sql,
-		"click_stats_1m",
+		"click_stats_1h",
 	) {
 		t.Fatalf(
-			"query = %q, want click_stats_1m",
+			"query = %q, want click_stats_1h",
 			doer.sql,
 		)
 	}
 	if !strings.Contains(doer.sql, "sum(clicks)") {
 		t.Fatalf("click cap must sum the rollup count: %s", doer.sql)
 	}
-	if !strings.Contains(doer.sql, "toStartOfMinute(now() - INTERVAL 24 HOUR)") {
-		t.Fatalf("click cap must include the boundary minute: %s", doer.sql)
+	if !strings.Contains(doer.sql, "toStartOfHour(now() - INTERVAL 24 HOUR) + INTERVAL 1 HOUR") {
+		t.Fatalf("click cap must use full hours and the partial boundary hour: %s", doer.sql)
 	}
 }
 
@@ -100,11 +100,11 @@ func TestBuildROISQLAttributesByClickID(t *testing.T) {
 	if !strings.Contains(sql, "FROM attributed_conversion_events") {
 		t.Fatalf("ROI must use attributed conversions: %s", sql)
 	}
-	if !strings.Contains(sql, "FROM click_stats_1m") || strings.Contains(sql, "FROM click_events") {
-		t.Fatalf("ROI must use the minute click rollup: %s", sql)
+	if !strings.Contains(sql, "FROM click_stats_1h") || !strings.Contains(sql, "FROM click_events") {
+		t.Fatalf("ROI must use the hourly click rollup: %s", sql)
 	}
-	if !strings.Contains(sql, "toStartOfMinute(now() - INTERVAL 24 HOUR)") {
-		t.Fatalf("ROI must use minute-aligned window: %s", sql)
+	if !strings.Contains(sql, "toStartOfHour(now() - INTERVAL 24 HOUR) + INTERVAL 1 HOUR") {
+		t.Fatalf("ROI must include complete hours and the exact raw boundary: %s", sql)
 	}
 }
 

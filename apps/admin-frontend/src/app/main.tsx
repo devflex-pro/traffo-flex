@@ -56,6 +56,7 @@ import {
   setActingAsUserID
 } from "./api";
 import { incomingPostbackURL, generatePostbackSecret } from "./postbacks";
+import { reportGroups, defaultReportPath, reportTimezones, reportPreset, ReportGroup } from "./reporting";
 import "./styles.css";
 
 const queryClient = new QueryClient();
@@ -597,9 +598,11 @@ function UsersPage({ onActAs }: { onActAs: (user: AuthUser) => Promise<void> }) 
 }
 
 const sourceOptionalMacros = [
-  { label: "Publisher ID", param: "sub2", macro: "[PUBLISHER_ID]" },
-  { label: "Site ID", param: "sub3", macro: "[SITE_ID]" },
-  { label: "Creative ID", param: "sub4", macro: "[CREATIVE_ID]" },
+  { label: "Region", param: "geo_region", macro: "[REGION]" },
+  { label: "City", param: "city", macro: "[CITY]" },
+  { label: "Publisher ID", param: "publisher_id", macro: "[PUBLISHER_ID]" },
+  { label: "Site ID", param: "site_id", macro: "[SITE_ID]" },
+  { label: "Creative ID", param: "creative_id", macro: "[CREATIVE_ID]" },
   { label: "Device", param: "device_type", macro: "[DEVICE]" },
   { label: "Browser", param: "browser", macro: "[BROWSER]" },
   { label: "OS", param: "os", macro: "[OS]" },
@@ -608,13 +611,19 @@ const sourceOptionalMacros = [
   { label: "Connection type", param: "source_connection_type", macro: "[CONNECTION_TYPE]" },
   { label: "Source campaign ID", param: "source_campaign_id", macro: "[CAMPAIGN_ID]" },
   { label: "Source campaign name", param: "source_campaign_name", macro: "[CAMPAIGN_NAME]" },
-  { label: "CPV price per 1000 impressions", param: "source_cpv_price", macro: "[CPV_PRICE]" },
+  { label: "CPV price (source value)", param: "source_cpv_price", macro: "[CPV_PRICE]" },
   { label: "Source IP (raw only)", param: "source_ip", macro: "[IP]" }
 ] as const;
 
+const legacyTrackingKeys: Record<string, string> = {
+  zone_id: "sub1",
+  publisher_id: "sub2",
+  site_id: "sub3",
+  creative_id: "sub4"
+};
+
 const defaultTrackingParams: TrackingParam[] = [
-  { key: "source_id", value: "[ZONE_ID]" },
-  { key: "sub1", value: "[ZONE_ID]" },
+  { key: "zone_id", value: "[ZONE_ID]" },
   { key: "geo_country", value: "[COUNTRY]" },
   { key: "clickid", value: "[CLICK_ID]" },
   { key: "utm_content", value: "[CLICK_ID]" }
@@ -683,25 +692,25 @@ function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
   onSaved: (campaign: Campaign) => void;
 }) {
   const initialParams = configuredTrackingParams(campaign);
-  const initialValue = (key: string) => initialParams.find((param) => param.key === key)?.value ?? "";
-  const [zoneID, setZoneID] = useState(initialValue("sub1") || initialValue("source_id"));
+  const initialValue = (key: string) => initialParams.find((param) => param.key === key)?.value ?? initialParams.find((param) => param.key === legacyTrackingKeys[key])?.value ?? "";
+  const [zoneID, setZoneID] = useState(initialValue("zone_id") || initialValue("source_id"));
   const [country, setCountry] = useState(initialValue("geo_country"));
   const [clickID, setClickID] = useState(initialValue("clickid") || initialValue("utm_content"));
+  const [macroValues, setMacroValues] = useState<Record<string, string>>(() => Object.fromEntries(sourceOptionalMacros.map(macro => [macro.param, initialValue(macro.param) || macro.macro])));
   const [optionalParams, setOptionalParams] = useState<string[]>(
-    sourceOptionalMacros.filter((macro) => initialParams.some((param) => param.key === macro.param)).map((macro) => macro.param)
+    sourceOptionalMacros.filter((macro) => initialParams.some((param) => param.key === macro.param || param.key === legacyTrackingKeys[macro.param])).map((macro) => macro.param)
   );
   const [copyStatus, setCopyStatus] = useState("");
   const [saveStatus, setSaveStatus] = useState("");
   const params: TrackingParam[] = [
-    { key: "source_id", value: zoneID },
-    { key: "sub1", value: zoneID },
+    { key: "zone_id", value: zoneID },
     { key: "geo_country", value: country },
     { key: "clickid", value: clickID },
     { key: "utm_content", value: clickID }
   ];
   for (const macro of sourceOptionalMacros) {
     if (optionalParams.includes(macro.param)) {
-      params.push({ key: macro.param, value: macro.macro });
+      params.push({ key: macro.param, value: macroValues[macro.param] });
     }
   }
   const savedParams = params.filter((param) => param.value.trim() !== "");
@@ -726,9 +735,9 @@ function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
       ) : null}
       <div className="grid gap-3 sm:grid-cols-3">
         <label className="block text-sm font-medium">
-          Source / zone ID
+          Zone ID
           <input className="input mt-1" onChange={(event) => setZoneID(event.target.value)} value={zoneID} />
-          <span className="mt-1 block text-xs font-normal text-zinc-500">source_id and sub1</span>
+          <span className="mt-1 block text-xs font-normal text-zinc-500">zone_id</span>
         </label>
         <label className="block text-sm font-medium">
           Country
@@ -745,29 +754,26 @@ function CampaignLinkBuilder({ campaign, baseURL, onSaved }: {
         <p>TraffoFlex generates its own click_id for the destination URL; the source [CLICK_ID] is stored as the external click ID.</p>
         <p>[COUNTRY] is a country name. Rules that expect a two-letter code such as US will not match it.</p>
         {campaign.traffic_source_id ? (
-          <p>This campaign has a configured traffic source ID, which takes precedence over source_id in click analytics. The zone ID remains available in sub1.</p>
+          <p>The campaign's traffic source and zone are separate: the source is taken from campaign settings, and the zone is stored as zone_id.</p>
         ) : null}
       </div>
       <details className="rounded-md border border-zinc-200 p-3">
         <summary className="cursor-pointer text-sm font-medium">Optional source macros</summary>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           {sourceOptionalMacros.map((macro) => (
-            <label className="flex items-center gap-2 text-sm" key={macro.param}>
-              <input
-                checked={optionalParams.includes(macro.param)}
-                onChange={(event) => setOptionalParams((current) =>
-                  event.target.checked
-                    ? [...current, macro.param]
-                    : current.filter((item) => item !== macro.param)
-                )}
-                type="checkbox"
-              />
-              {macro.label} <code className="text-xs text-zinc-500">{macro.macro}</code>
-            </label>
+            <div className="rounded border border-zinc-100 p-2" key={macro.param}>
+              <label className="flex items-center gap-2 text-sm">
+                <input checked={optionalParams.includes(macro.param)} onChange={(event) => setOptionalParams(current => event.target.checked ? [...current, macro.param] : current.filter(item => item !== macro.param))} type="checkbox" />
+                {macro.label}
+              </label>
+              <input className="input mt-2 font-mono text-xs" aria-label={`${macro.label} macro`} disabled={!optionalParams.includes(macro.param)} value={macroValues[macro.param]} onChange={event => setMacroValues(current => ({ ...current, [macro.param]: event.target.value }))} />
+              <code className="mt-1 block text-xs text-zinc-500">{macro.param}</code>
+            </div>
           ))}
         </div>
+        <p className="mt-3 text-xs text-zinc-500">Use macros supported by your traffic source. Edit optional values when its macro names differ.</p>
         <p className="mt-3 text-xs text-zinc-500">
-          CPV price is kept as a raw parameter; it is per 1000 impressions and is not used as click cost. The source IP parameter is also stored as raw data and is not trusted as the visitor IP.
+          CPV price is stored exactly as provided by the source and is not used as click cost. Check its unit in the source settings. The source IP is stored as raw data and is not trusted as the visitor IP.
         </p>
       </details>
       <label className="block text-sm font-medium">
@@ -2509,325 +2515,187 @@ function HealthHistoryPage() {
 
 function ReportsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const campaignID = searchParams.get("campaign_id") ?? "";
-  const defaultPeriod = useMemo(
-    defaultReportPeriod,
-    []
-  );
-  const [group, setGroup] = useState("campaigns");
-  const [chartMode, setChartMode] = useState<"volume" | "money" | "efficiency">("money");
-  const [period, setPeriod] = useState(defaultPeriod);
-  const reportFilters = useMemo(
-    () => ({
-      ...reportDateRange(
-        period.from,
-        period.to
-      ),
-      campaign_id: campaignID || undefined
-    }),
-    [
-      period,
-      campaignID
-    ]
-  );
-  const campaigns = useQuery({
-    queryKey: ["report-campaign-lookup"],
-    queryFn: () => api.campaigns({ limit: 500 })
+  const urlState = searchParams.toString();
+  const timezone = searchParams.get("timezone") || "UTC";
+  const preset = useMemo(() => {
+    try { return reportPreset("7days", timezone); }
+    catch { return reportPreset("7days", "UTC"); }
+  }, [timezone]);
+  const period = { from: searchParams.get("from") || preset.from, to: searchParams.get("to") || preset.to };
+  const validPeriod = /^\d{4}-\d{2}-\d{2}$/.test(period.from) && /^\d{4}-\d{2}-\d{2}$/.test(period.to) && period.from <= period.to;
+  const chosenPath = (searchParams.get("groups") || defaultReportPath.join(",")).split(",").filter(key => reportGroups.some(group => group.key === key));
+  const path = [...new Set(chosenPath)].slice(0, 3) as ReportGroup[];
+  if (!path.length) path.push("campaign");
+  const trail = path.flatMap(key => {
+    const item = reportGroups.find(group => group.key === key)!;
+    const value = searchParams.get(`drill_${item.field}`);
+    return value === null ? [] : [{ ...item, value }];
   });
-  const streams = useQuery({
-    queryKey: [
-      "report-stream-lookup",
-      campaigns.data?.items.map((campaign) => campaign.id).join(",") ?? ""
-    ],
-    enabled: Boolean(campaigns.data),
-    queryFn: async () => {
-      const results = await Promise.all(
-        (campaigns.data?.items ?? []).map((campaign) =>
-          api.streams(
-            campaign.id,
-            { limit: 500 }
-          )
-        )
-      );
-      return results.flatMap((result) => result.items);
-    }
-  });
-  const destinations = useQuery({
-    queryKey: ["report-destination-lookup"],
-    queryFn: () => api.destinations({ limit: 500 })
-  });
-  const sources = useQuery({
-    queryKey: ["report-source-lookup"],
-    queryFn: () => api.trafficSources({ limit: 500 })
-  });
-  const report = useQuery({
-    queryKey: [
-      "report",
-      group,
-      reportFilters
-    ],
-    queryFn: () => api.report(
-      group,
-      reportFilters
-    )
-  });
-  const dailyReport = useQuery({
-    queryKey: [
-      "report-daily",
-      reportFilters
-    ],
-    queryFn: () => api.dailyReport(reportFilters)
-  });
-  const nameLookup = useMemo(
-    () => {
-      const lookup: Record<string, string> = {};
-      for (const campaign of campaigns.data?.items ?? []) {
-        lookup[campaign.id] = campaign.name;
-      }
-      for (const stream of streams.data ?? []) {
-        lookup[stream.id] = stream.name;
-      }
-      for (const destination of destinations.data?.items ?? []) {
-        lookup[destination.id] = destination.name;
-      }
-      for (const source of sources.data?.items ?? []) {
-        lookup[source.id] = source.name;
-      }
-      return lookup;
-    },
-    [
-      campaigns.data,
-      destinations.data,
-      sources.data,
-      streams.data
-    ]
-  );
-  const dailyRows = dailyReport.data?.rows ?? [];
-  const rows = useMemo(
-    () =>
-      (report.data?.rows ?? []).map((row) => ({
-        ...row,
-        name: nameLookup[row.id] ?? (["trafficback", "health"].includes(group) ? humanizeID(row.name || row.id) : row.name || row.id)
-      })),
-    [
-      nameLookup,
-      group,
-      report.data
-    ]
-  );
-  const columns = useMemo<ColumnDef<ReportRow>[]>(
-    () => [
-      {
-        header: "Name",
-        cell: ({ row }) => (
-          <div>
-            <div className="font-medium text-zinc-950" title={row.original.id}>{row.original.name || row.original.id}</div>
-          </div>
-        )
-      },
-      {
-        header: "Clicks",
-        cell: ({ row }) => formatMetricValue(
-          "clicks",
-          row.original.metrics.clicks
-        )
-      },
-      {
-        header: "Conversions",
-        cell: ({ row }) => formatMetricValue(
-          "conversions",
-          row.original.metrics.conversions
-        )
-      },
-      {
-        header: "Revenue",
-        cell: ({ row }) => formatMetricValue(
-          "revenue",
-          row.original.metrics.revenue
-        )
-      },
-      {
-        header: "Cost",
-        cell: ({ row }) => formatMetricValue(
-          "cost",
-          row.original.metrics.cost
-        )
-      },
-      {
-        header: "Profit",
-        cell: ({ row }) => (
-          <span className={row.original.metrics.profit >= 0 ? "text-emerald-700" : "text-red-700"}>
-            {formatMetricValue(
-              "profit",
-              row.original.metrics.profit
-            )}
-          </span>
-        )
-      },
-      {
-        header: "ROI",
-        cell: ({ row }) => (
-          <span className={row.original.metrics.roi >= 0 ? "text-emerald-700" : "text-red-700"}>
-            {formatMetricValue(
-              "roi",
-              row.original.metrics.roi
-            )}
-          </span>
-        )
-      },
-      {
-        header: "Events",
-        cell: ({ row }) => formatMetricValue(
-          "events",
-          row.original.metrics.events ?? 0
-        )
-      }
-    ],
-    []
-  );
-  const chartBars = chartMode === "volume" ? (
-    <>
-      <Bar dataKey="metrics.clicks" fill="#2563eb" name="Clicks" />
-      <Bar dataKey="metrics.conversions" fill="#16a34a" name="Conversions" />
-      <Bar dataKey="metrics.events" fill="#9333ea" name="Events" />
-    </>
-  ) : chartMode === "money" ? (
-    <>
-      <Bar dataKey="metrics.revenue" fill="#0f766e" name="Revenue" />
-      <Bar dataKey="metrics.cost" fill="#f97316" name="Cost" />
-      <Bar dataKey="metrics.profit" fill="#16a34a" name="Profit" />
-    </>
-  ) : (
-    <>
-      <Bar dataKey="metrics.roi" fill="#7c3aed" name="ROI" />
-    </>
-  );
+  const level = Math.min(trail.length, path.length - 1);
+  const currentGroup = reportGroups.find(group => group.key === path[level])!;
+  const eventMode = ["trafficback", "health"].includes(searchParams.get("event") || "") ? searchParams.get("event")! : "";
+  const limit = Number(searchParams.get("limit") || 100);
+  const offset = Number(searchParams.get("offset") || 0);
+  const sort = searchParams.get("sort") || "clicks";
+  const order = searchParams.get("order") || "desc";
+  const [search, setSearch] = useState("");
+  const [chartMode, setChartMode] = useState<"money" | "volume" | "efficiency">("money");
 
-  return (
-    <Page title="Reports">
-      <div className="mb-4 flex gap-2">
-        {["campaigns", "streams", "destinations", "sources", "trafficback", "health"].map((item) => (
-          <button
-            className={item === group ? "button-primary" : "button-secondary"}
-            key={item}
-            onClick={() => setGroup(item)}
-            type="button"
-          >
-            {item}
-          </button>
-        ))}
+  function updateURL(values: Record<string, string | null>, clearTrail = false) {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current);
+      if (clearTrail) reportGroups.forEach(group => next.delete(`drill_${group.field}`));
+      Object.entries(values).forEach(([key, value]) => value === null ? next.delete(key) : next.set(key, value));
+      if (!("offset" in values)) next.delete("offset");
+      return next;
+    });
+  }
+
+  const selectedFilters: Record<string, string> = {};
+  for (const group of reportGroups) {
+    const value = searchParams.get(group.field);
+    if (value) selectedFilters[group.field] = value;
+  }
+  const segmentFilters: Record<string, string | number | undefined> = { ...selectedFilters, from: period.from, to: period.to, timezone };
+  const emptyFields: string[] = [];
+  for (const item of trail) {
+    if (item.value === "") emptyFields.push(item.field);
+    else segmentFilters[item.field] = item.value;
+  }
+  if (emptyFields.length) segmentFilters.empty = emptyFields.join(",");
+  const tableFilters = { ...segmentFilters, sort, order, limit, offset, profit: searchParams.get("profit") || undefined, min_clicks: Number(searchParams.get("min_clicks") || 0) };
+  const campaigns = useQuery({ queryKey: ["report-campaign-lookup"], queryFn: () => api.campaigns({ limit: 500 }) });
+  const destinations = useQuery({ queryKey: ["report-destination-lookup"], queryFn: () => api.destinations({ limit: 500 }) });
+  const sources = useQuery({ queryKey: ["report-source-lookup"], queryFn: () => api.trafficSources({ limit: 500 }) });
+  const streams = useQuery({
+    queryKey: ["report-stream-lookup", campaigns.data?.items.map(campaign => campaign.id).join(",") || ""],
+    enabled: Boolean(campaigns.data),
+    queryFn: async () => (await Promise.all((campaigns.data?.items ?? []).map(campaign => api.streams(campaign.id, { limit: 500 })))).flatMap(result => result.items)
+  });
+  const catalogs: Record<string, { id: string; name: string }[]> = {
+    campaign_id: campaigns.data?.items ?? [], stream_id: streams.data ?? [], destination_id: destinations.data?.items ?? [], source_id: sources.data?.items ?? []
+  };
+  function displayValue(field: string, value: string) {
+    return value === "" ? "Unknown" : catalogs[field]?.find(item => item.id === value)?.name || value;
+  }
+  const report = useQuery({
+    queryKey: ["report-explorer", eventMode || currentGroup.key, tableFilters],
+    enabled: validPeriod,
+    queryFn: () => eventMode ? api.report(eventMode, segmentFilters) : api.groupedReport(currentGroup.key, tableFilters)
+  });
+  const overview = useQuery({ queryKey: ["report-overview", segmentFilters], enabled: validPeriod && !eventMode, queryFn: () => api.overview(segmentFilters) });
+  const daily = useQuery({ queryKey: ["report-daily", segmentFilters], enabled: validPeriod && !eventMode, queryFn: () => api.dailyReport(segmentFilters) });
+  const dataRows = useMemo(() => (report.data?.rows ?? []).map(row => ({
+    ...row, name: eventMode ? humanizeID(row.name || row.id) : displayValue(currentGroup.field, row.id)
+  })), [report.data, currentGroup.field, eventMode, campaigns.data, streams.data, destinations.data, sources.data]);
+  const rows = useMemo(() => dataRows.filter(row => row.name.toLocaleLowerCase().includes(search.toLocaleLowerCase())), [dataRows, search]);
+  const total = report.data?.total ?? dataRows.length;
+
+  const filterForm = useForm<Record<string, string>>({ defaultValues: { ...selectedFilters, ...period, timezone, profit: searchParams.get("profit") || "", min_clicks: searchParams.get("min_clicks") || "" } });
+  useEffect(() => {
+    const values: Record<string, string> = { from: period.from, to: period.to, timezone, profit: searchParams.get("profit") || "", min_clicks: searchParams.get("min_clicks") || "" };
+    reportGroups.forEach(group => { values[group.field] = searchParams.get(group.field) || ""; });
+    filterForm.reset(values);
+  }, [urlState]);
+  function applyFilters(values: Record<string, string>) {
+    const validation = z.object({ from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).refine(value => value.from <= value.to).safeParse(values);
+    if (!validation.success) { filterForm.setError("to", { message: "Choose a valid period; From must be before To." }); return; }
+    if (values.stream_id && values.campaign_id && !streams.data?.some(stream => stream.id === values.stream_id && stream.campaign_id === values.campaign_id)) values.stream_id = "";
+    const updates: Record<string, string | null> = { from: values.from, to: values.to, timezone: values.timezone, profit: values.profit || null, min_clicks: values.min_clicks || null };
+    reportGroups.forEach(group => { updates[group.field] = values[group.field]?.trim() || null; });
+    updateURL(updates, true);
+  }
+  function drill(row: ReportRow) {
+    setSearch("");
+    if (level < path.length - 1) updateURL({ [`drill_${currentGroup.field}`]: row.id });
+    else if (row.id !== "") updateURL({ [currentGroup.field]: row.id });
+    else updateURL({ [`drill_${currentGroup.field}`]: "" });
+  }
+  function selectPath(index: number, key: string) {
+    const next = [...path];
+    if (key) {
+      const existing = next.indexOf(key as ReportGroup);
+      if (existing >= 0 && existing !== index) next[existing] = next[index];
+      next[index] = key as ReportGroup;
+    }
+    else next.splice(index);
+    updateURL({ groups: [...new Set(next)].join(","), event: null }, true);
+  }
+  function setEvent(mode: string) {
+    const updates: Record<string, string | null> = { event: mode || null };
+    if (mode) reportGroups.filter(group => !(mode === "health" ? ["destination_id"] : ["campaign_id", "stream_id", "destination_id"]).includes(group.field)).forEach(group => { updates[group.field] = null; });
+    updateURL(updates, true);
+  }
+  const money = (value: number) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
+  const ratio = (top: number, bottom: number, multiplier = 1) => bottom ? top / bottom * multiplier : 0;
+  const heading = (label: string, key: string) => () => <button type="button" className="whitespace-nowrap hover:text-zinc-950" aria-label={`Sort by ${label}`} onClick={() => updateURL({ sort: key, order: sort === key && order === "desc" ? "asc" : "desc" })}>{label} {sort === key ? (order === "desc" ? "↓" : "↑") : ""}</button>;
+  const columns: ColumnDef<ReportRow>[] = eventMode ? [
+    { header: eventMode === "health" ? "Status" : "Reason", accessorKey: "name" },
+    { header: "Events", cell: ({ row }) => formatInteger(row.original.metrics.events ?? 0) }
+  ] : [
+    { id: "name", header: heading(currentGroup.label, "name"), cell: ({ row }) => <button type="button" className="text-left font-medium text-indigo-700 hover:underline" title={`Filter ${currentGroup.label}: ${row.original.name}${level < path.length - 1 ? ` → ${reportGroups.find(group => group.key === path[level + 1])?.label}` : ""}`} onClick={() => drill(row.original)}>{row.original.name} <span aria-hidden="true">›</span></button> },
+    { id: "clicks", header: heading("Clicks", "clicks"), cell: ({ row }) => formatInteger(row.original.metrics.clicks) },
+    { id: "conversions", header: heading("Conversions", "conversions"), cell: ({ row }) => formatInteger(row.original.metrics.conversions) },
+    { id: "cr", header: heading("CR", "cr"), cell: ({ row }) => `${formatFixed(ratio(row.original.metrics.conversions, row.original.metrics.clicks, 100))}%` },
+    { id: "revenue", header: heading("Revenue", "revenue"), cell: ({ row }) => money(row.original.metrics.revenue) },
+    { id: "cost", header: heading("Cost", "cost"), cell: ({ row }) => money(row.original.metrics.cost) },
+    { id: "profit", header: heading("Profit", "profit"), cell: ({ row }) => <span className={row.original.metrics.profit >= 0 ? "text-emerald-700" : "text-red-700"}>{money(row.original.metrics.profit)}</span> },
+    { id: "roi", header: heading("ROI", "roi"), cell: ({ row }) => <span className={row.original.metrics.roi >= 0 ? "text-emerald-700" : "text-red-700"}>{formatFixed(row.original.metrics.roi)}%</span> },
+    { id: "cpc", header: heading("CPC", "cpc"), cell: ({ row }) => row.original.metrics.clicks ? money(ratio(row.original.metrics.cost, row.original.metrics.clicks)) : "—" },
+    { id: "epc", header: heading("EPC", "epc"), cell: ({ row }) => row.original.metrics.clicks ? money(ratio(row.original.metrics.revenue, row.original.metrics.clicks)) : "—" },
+    { id: "cpa", header: heading("CPA", "cpa"), cell: ({ row }) => row.original.metrics.conversions ? money(ratio(row.original.metrics.cost, row.original.metrics.conversions)) : "—" }
+  ];
+  const error = report.error || overview.error || daily.error || campaigns.error || streams.error || destinations.error || sources.error;
+  return <Page title="Reports">
+    <Panel title="Filters">
+      <form onSubmit={filterForm.handleSubmit(applyFilters)} className="space-y-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="text-sm font-medium">From<input className="input mt-1" type="date" {...filterForm.register("from")} /></label>
+          <label className="text-sm font-medium">To<input className="input mt-1" type="date" {...filterForm.register("to")} /></label>
+          <label className="text-sm font-medium">Timezone<select className="input mt-1" {...filterForm.register("timezone")}>{reportTimezones.map(zone => <option key={zone}>{zone}</option>)}</select></label>
+          {[["today", "Today"], ["yesterday", "Yesterday"], ["7days", "Last 7 days"], ["30days", "Last 30 days"]].map(([key, label]) => <button key={key} type="button" className="button-secondary" onClick={() => { const range = reportPreset(key, filterForm.getValues("timezone")); filterForm.setValue("from", range.from); filterForm.setValue("to", range.to); void filterForm.handleSubmit(applyFilters)(); }}>{label}</button>)}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {reportGroups.filter(group => group.field in catalogs && (!eventMode || (eventMode === "health" ? group.field === "destination_id" : group.field !== "source_id"))).map(group => <label key={group.field} className="text-sm font-medium">{group.label}<select className="input mt-1" {...filterForm.register(group.field)}><option value="">All</option>{selectedFilters[group.field] && !catalogs[group.field].some(item => item.id === selectedFilters[group.field]) ? <option value={selectedFilters[group.field]}>{selectedFilters[group.field]}</option> : null}{catalogs[group.field].filter(item => group.field !== "stream_id" || !filterForm.watch("campaign_id") || (item as Stream).campaign_id === filterForm.watch("campaign_id")).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>)}
+        </div>
+        {!eventMode ? <details className="rounded-md border border-zinc-200 p-3"><summary className="cursor-pointer text-sm font-medium">GEO, devices & placements</summary><div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{reportGroups.filter(group => !(group.field in catalogs)).map(group => <label key={group.field} className="text-sm font-medium">{group.label}<input className="input mt-1" placeholder={`Any ${group.label.toLowerCase()}`} {...filterForm.register(group.field)} /></label>)}</div></details> : null}
+        <div className="flex items-center gap-3"><button className="button-primary" type="submit">Apply filters</button><button className="button-secondary" type="button" onClick={() => { setSearchParams({ groups: path.join(",") }); setSearch(""); }}>Reset filters</button><span role="alert" className="text-sm text-red-700">{filterForm.formState.errors.to?.message || (!validPeriod ? "Invalid period" : "")}</span></div>
+      </form>
+    </Panel>
+    <div className="my-4 flex flex-wrap gap-2" aria-label="Active filters">
+      {Object.entries(selectedFilters).map(([field, value]) => <button type="button" key={field} className="rounded-full border border-zinc-300 bg-white px-3 py-1 text-sm" onClick={() => updateURL({ [field]: null })}>{reportGroups.find(group => group.field === field)?.label}: {displayValue(field, value)} ×</button>)}
+    </div>
+    {error ? <p role="alert" className="mb-4 text-sm text-red-700">{error instanceof Error ? error.message : "Failed to load report"}</p> : null}
+    {eventMode ? <p className="my-4 text-lg font-medium">{formatInteger(report.data?.summary.events ?? 0)} events</p> : <MetricGrid metrics={overview.data} />}
+    <Panel title="Grouping & drill-down" className="mt-6">
+      <div className="flex flex-wrap items-end gap-3">
+        {[0, 1, 2].map(index => <label key={index} className="text-sm font-medium">{index === 0 ? "Group by" : "Then by"}<select className="input mt-1" disabled={Boolean(eventMode) || index > path.length} aria-label={index === 0 ? "Group by" : `Then by ${index}`} value={path[index] || ""} onChange={event => selectPath(index, event.target.value)}>{index > 0 ? <option value="">None</option> : null}{reportGroups.map(group => <option key={group.key} value={group.key}>{group.label}</option>)}</select></label>)}
+        <label className="ml-auto text-sm font-medium">Report type<select className="input mt-1" value={eventMode} onChange={event => setEvent(event.target.value)}><option value="">Traffic & conversions</option><option value="trafficback">Trafficback events</option><option value="health">Health events</option></select></label>
       </div>
-      <Panel title="Period" className="mb-6">
-        <label className="mb-4 block max-w-sm text-sm font-medium">
-          Campaign
-          <select
-            className="input mt-2"
-            onChange={(event) => {
-              const selectedID = event.target.value;
-              setSearchParams((current) => {
-                const next = new URLSearchParams(current);
-                if (selectedID) {
-                  next.set("campaign_id", selectedID);
-                } else {
-                  next.delete("campaign_id");
-                }
-                return next;
-              });
-            }}
-            value={campaignID}
-          >
-            <option value="">All campaigns</option>
-            {campaignID && !campaigns.data?.items.some((campaign) => campaign.id === campaignID) ? (
-              <option value={campaignID}>{campaignID}</option>
-            ) : null}
-            {(campaigns.data?.items ?? []).map((campaign) => (
-              <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
-            ))}
-          </select>
-        </label>
-        <div className="grid grid-cols-[repeat(2,minmax(180px,240px))_auto] items-end gap-3">
-          <label className="text-sm font-medium">
-            From
-            <input
-              className="input mt-2"
-              onChange={(event) =>
-                setPeriod((current) => ({
-                  ...current,
-                  from: event.target.value
-                }))
-              }
-              type="date"
-              value={period.from}
-            />
-          </label>
-          <label className="text-sm font-medium">
-            To
-            <input
-              className="input mt-2"
-              onChange={(event) =>
-                setPeriod((current) => ({
-                  ...current,
-                  to: event.target.value
-                }))
-              }
-              type="date"
-              value={period.to}
-            />
-          </label>
-          <button
-            className="button-secondary"
-            onClick={() => setPeriod(defaultReportPeriod())}
-            type="button"
-          >
-            Last 7 days
-          </button>
-        </div>
-      </Panel>
-      <MetricGrid metrics={report.data?.summary} />
-      <Panel title="Daily chart" className="mt-6">
-        <div className="mb-4 flex gap-2">
-          {(["money", "volume", "efficiency"] as const).map((item) => (
-            <button
-              className={item === chartMode ? "button-primary" : "button-secondary"}
-              key={item}
-              onClick={() => setChartMode(item)}
-              type="button"
-            >
-              {item}
-            </button>
-          ))}
-        </div>
-        <div className="h-72">
-          <ResponsiveContainer height="100%" width="100%">
-            <BarChart data={dailyRows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" />
-              <YAxis />
-              <Tooltip
-                formatter={(value, name) => {
-                  const metricName = String(name).replace(
-                    "metrics.",
-                    ""
-                  ).toLowerCase() as MetricKey;
-                  return [
-                    formatMetricValue(
-                      metricName,
-                      Number(value)
-                    ),
-                    metricName
-                  ];
-                }}
-              />
-              {chartBars}
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </Panel>
-      <Panel title="Table" className="mt-6">
-        <DataTable columns={columns} data={rows} />
-      </Panel>
-    </Page>
-  );
+      {!eventMode ? <>
+        <nav aria-label="Drill-down path" className="mt-4 flex flex-wrap items-center gap-2 text-sm"><button type="button" className="text-indigo-700 hover:underline" onClick={() => updateURL({}, true)}>All groups</button>{trail.map((item, index) => <React.Fragment key={item.field}><span>›</span><button type="button" className="rounded-md bg-indigo-50 px-2 py-1 text-indigo-800" onClick={() => { const updates: Record<string, null> = {}; trail.slice(index + 1).forEach(later => { updates[`drill_${later.field}`] = null; }); updateURL(updates); }}>{item.label}: {displayValue(item.field, item.value)}</button><button type="button" aria-label={`Remove ${item.label} drill-down`} className="text-zinc-500" onClick={() => { const updates: Record<string, null> = {}; trail.slice(index).forEach(later => { updates[`drill_${later.field}`] = null; }); updateURL(updates); }}>×</button></React.Fragment>)}</nav>
+        <p className="mt-2 text-sm text-zinc-600">Click a row to filter this segment{level < path.length - 1 ? ` and group by ${reportGroups.find(group => group.key === path[level + 1])?.label.toLowerCase()}` : ""}.</p>
+      </> : null}
+    </Panel>
+    <Panel title={eventMode ? "Events" : `By ${currentGroup.label.toLowerCase()}`} className="mt-6">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <label className="text-sm font-medium">Search this page<input type="search" className="input mt-1" value={search} onChange={event => setSearch(event.target.value)} /></label>
+        {!eventMode ? <><label className="text-sm font-medium">Rows<select className="input mt-1" value={searchParams.get("profit") || ""} onChange={event => updateURL({ profit: event.target.value || null })}><option value="">All results</option><option value="positive">Profitable</option><option value="negative">Unprofitable</option></select></label><label className="text-sm font-medium">Minimum clicks<input type="number" min="0" step="1" className="input mt-1 w-36" value={searchParams.get("min_clicks") || ""} onChange={event => updateURL({ min_clicks: event.target.value || null })} /></label></> : null}
+        <button type="button" className="button-secondary ml-auto" disabled={report.isFetching || !validPeriod} onClick={() => { void report.refetch(); if (!eventMode) { void overview.refetch(); void daily.refetch(); } }}>Refresh</button>
+      </div>
+      {report.isFetching ? <p role="status" className="mb-3 text-sm text-zinc-500">Loading report…</p> : null}
+      <div className="overflow-x-auto"><DataTable columns={columns} data={rows} /></div>
+      {!report.isPending && rows.length === 0 ? <p className="py-8 text-center text-sm text-zinc-500">No results for these filters.</p> : null}
+      {!eventMode ? <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+        <span>{total ? `${offset + 1}–${Math.min(offset + limit, total)} of ${total}` : "0 results"} · Matching rows: revenue {money(report.data?.summary.revenue ?? 0)}, cost {money(report.data?.summary.cost ?? 0)}, profit {money(report.data?.summary.profit ?? 0)}</span>
+        <div className="flex items-center gap-2"><label>Per page <select className="rounded border border-zinc-300 p-1" aria-label="Rows per page" value={limit} onChange={event => updateURL({ limit: event.target.value })}>{[25, 50, 100, 250, 500].map(size => <option key={size}>{size}</option>)}</select></label><button className="button-secondary" type="button" disabled={offset === 0 || report.isFetching} onClick={() => updateURL({ offset: String(Math.max(0, offset - limit)) })}>Previous</button><button className="button-secondary" type="button" disabled={offset + limit >= total || report.isFetching} onClick={() => updateURL({ offset: String(offset + limit) })}>Next</button></div>
+      </div> : null}
+    </Panel>
+    {!eventMode ? <Panel title="Daily trend for this segment" className="mt-6">
+      <div className="mb-4 flex gap-2">{(["money", "volume", "efficiency"] as const).map(mode => <button className={chartMode === mode ? "button-primary" : "button-secondary"} type="button" key={mode} onClick={() => setChartMode(mode)}>{mode}</button>)}</div>
+      <div className="h-72"><ResponsiveContainer width="100%" height="100%"><BarChart data={daily.data?.rows ?? []}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="name" /><YAxis /><Tooltip />{chartMode === "money" ? <><Bar dataKey="metrics.revenue" fill="#0f766e" name="Revenue" /><Bar dataKey="metrics.cost" fill="#f97316" name="Cost" /><Bar dataKey="metrics.profit" fill="#16a34a" name="Profit" /></> : chartMode === "volume" ? <><Bar dataKey="metrics.clicks" fill="#2563eb" name="Clicks" /><Bar dataKey="metrics.conversions" fill="#16a34a" name="Conversions" /></> : <Bar dataKey="metrics.roi" fill="#7c3aed" name="ROI" />}</BarChart></ResponsiveContainer></div>
+    </Panel> : null}
+  </Page>;
 }
 
 function IngestionPage() {
@@ -2904,7 +2772,7 @@ function MetricGrid({ metrics }: { metrics?: Metrics }) {
   ];
 
   return (
-    <div className="grid grid-cols-6 gap-3">
+    <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
       {items.map(([label, key, value]) => (
         <div className="rounded-md border border-zinc-200 bg-white p-4" key={label}>
           <div className="text-xs uppercase text-zinc-500">{label}</div>

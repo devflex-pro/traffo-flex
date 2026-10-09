@@ -6,7 +6,22 @@ CREATE TABLE IF NOT EXISTS traffoflex.click_attribution_lookup
     campaign_id String,
     stream_id String,
     destination_id String,
-    source_id String
+    source_id String,
+    geo_country String,
+    geo_region String,
+    city String,
+    device_type String,
+    os String,
+    browser String,
+    isp String,
+    zone_id String,
+    publisher_id String,
+    site_id String,
+    creative_id String,
+    carrier String,
+    connection_type String,
+    source_campaign_id String,
+    source_campaign_name String
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(created_at)
@@ -16,7 +31,8 @@ SETTINGS index_granularity = 1024;
 CREATE MATERIALIZED VIEW IF NOT EXISTS traffoflex.click_attribution_lookup_mv
 TO traffoflex.click_attribution_lookup
 AS
-SELECT created_at, owner_id, click_id, campaign_id, stream_id, destination_id, source_id
+SELECT created_at, owner_id, click_id, campaign_id, stream_id, destination_id, source_id,
+    geo_country, geo_region, city, device_type, os, browser, isp, if(notEmpty(JSONExtractString(query, 'zone_id')), JSONExtractString(query, 'zone_id'), sub1) AS zone_id, if(notEmpty(JSONExtractString(query, 'publisher_id')), JSONExtractString(query, 'publisher_id'), sub2) AS publisher_id, if(notEmpty(JSONExtractString(query, 'site_id')), JSONExtractString(query, 'site_id'), sub3) AS site_id, if(notEmpty(JSONExtractString(query, 'creative_id')), JSONExtractString(query, 'creative_id'), sub4) AS creative_id, JSONExtractString(query, 'carrier') AS carrier, JSONExtractString(query, 'source_connection_type') AS connection_type, JSONExtractString(query, 'source_campaign_id') AS source_campaign_id, JSONExtractString(query, 'source_campaign_name') AS source_campaign_name
 FROM traffoflex.click_events;
 
 CREATE TABLE IF NOT EXISTS traffoflex.attributed_conversion_events

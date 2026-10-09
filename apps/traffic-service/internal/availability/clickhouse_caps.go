@@ -350,27 +350,58 @@ const attributedConversionsSource = `(SELECT owner_id, conversion_id,
   any(destination_id) AS destination_id
   FROM attributed_conversion_events GROUP BY owner_id, conversion_id)`
 
+// Full hours come from the rollup; only the partial boundary hour reads events.
+func rollingClickSource(
+	predicate string,
+	windowHours int,
+) string {
+	return fmt.Sprintf(
+		`(SELECT destination_id, sum(clicks) AS clicks, sum(cost) AS cost
+FROM click_stats_1h
+WHERE %s AND created_at >= toStartOfHour(now() - INTERVAL %d HOUR) + INTERVAL 1 HOUR
+GROUP BY destination_id
+UNION ALL
+SELECT destination_id, count() AS clicks, sum(cost) AS cost
+FROM click_events
+WHERE %s AND created_at >= now() - INTERVAL %d HOUR
+AND created_at < toStartOfHour(now() - INTERVAL %d HOUR) + INTERVAL 1 HOUR
+GROUP BY destination_id)`,
+		predicate,
+		windowHours,
+		predicate,
+		windowHours,
+		windowHours,
+	)
+}
+
 func buildCapSQL(
 	destinationID string,
 	rule models.DestinationCapRule,
 ) string {
-	table := "click_stats_1m"
+	predicate := "destination_id = " + quoteString(destinationID)
 	expression := "sum(clicks)"
-	switch rule.Metric {
-	case models.CapMetricCost:
+	if rule.Metric == models.CapMetricCost {
 		expression = "sum(cost)"
-	case models.CapMetricConversions:
-		table = attributedConversionsSource
-		expression = "count()"
-	case models.CapMetricRevenue:
-		table = attributedConversionsSource
+	}
+	if rule.Metric == models.CapMetricClicks || rule.Metric == models.CapMetricCost {
+		return fmt.Sprintf(
+			"SELECT %s AS value FROM %s FORMAT JSONEachRow",
+			expression,
+			rollingClickSource(
+				predicate,
+				rule.WindowHours,
+			),
+		)
+	}
+	expression = "count()"
+	if rule.Metric == models.CapMetricRevenue {
 		expression = "sum(payout)"
 	}
 	return fmt.Sprintf(
-		"SELECT %s AS value FROM %s WHERE destination_id = %s AND created_at >= toStartOfMinute(now() - INTERVAL %d HOUR) FORMAT JSONEachRow",
+		"SELECT %s AS value FROM %s WHERE %s AND created_at >= now() - INTERVAL %d HOUR FORMAT JSONEachRow",
 		expression,
-		table,
-		quoteString(destinationID),
+		attributedConversionsSource,
+		predicate,
 		rule.WindowHours,
 	)
 }
@@ -398,8 +429,7 @@ func buildROISQL(
 		`SELECT destination_id, sum(clicks) AS clicks, sum(conversions) AS conversions, sum(revenue) AS revenue, sum(cost) AS cost
 FROM (
   SELECT destination_id, sum(clicks) AS clicks, 0 AS conversions, 0.0 AS revenue, sum(cost) AS cost
-  FROM click_stats_1m
-  WHERE destination_id IN (%s) AND created_at >= toStartOfMinute(now() - INTERVAL %d HOUR)
+  FROM %s
   GROUP BY destination_id
   UNION ALL
   SELECT destination_id, 0 AS clicks, count() AS conversions, sum(payout) AS revenue, 0.0 AS cost
@@ -409,8 +439,10 @@ FROM (
 )
 GROUP BY destination_id
 FORMAT JSONEachRow`,
-		inList,
-		windowHours,
+		rollingClickSource(
+			"destination_id IN ("+inList+")",
+			windowHours,
+		),
 		attributedConversionsSource,
 		inList,
 		windowHours,
@@ -540,7 +572,10 @@ func decodeROIRanking(
 	error,
 ) {
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
-	rows := make([]roiRow, 0)
+	rows := make(
+		[]roiRow,
+		0,
+	)
 	for {
 		var row roiRow
 		if err := decoder.Decode(&row); err != nil {

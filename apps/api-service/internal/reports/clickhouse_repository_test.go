@@ -69,7 +69,7 @@ func TestClickHouseOverviewQueriesMetrics(t *testing.T) {
 		)
 	}
 	for _, want := range []string{
-		"FROM click_stats_1h",
+		"FROM click_stats_1d",
 		"sum(clicks) AS clicks",
 		"FROM conversion_events",
 		"FROM attributed_conversion_events",
@@ -133,12 +133,12 @@ func TestClickReportSourcePreservesTimeBoundaries(t *testing.T) {
 		want  string
 		count string
 	}{
-		{name: "all time", want: clickStatsHourTable, count: "sum(clicks)"},
-		{name: "whole hours", from: "2026-01-01T00:00:00Z", to: "2026-01-01T23:59:59Z", want: clickStatsHourTable, count: "sum(clicks)"},
-		{name: "whole minutes", from: "2026-01-01T00:01:00Z", to: "2026-01-01T00:02:59Z", want: clickStatsMinuteTable, count: "sum(clicks)"},
-		{name: "daily timezone", from: "2026-01-01T00:00:00Z", to: "2026-01-01T23:59:59Z", daily: true, want: clickStatsMinuteTable, count: "sum(clicks)"},
-		{name: "partial start", from: "2026-01-01T00:00:30Z", to: "2026-01-01T23:59:59Z", want: clickStatsHourTable, count: "sum(clicks)"},
-		{name: "partial end", from: "2026-01-01T00:00:00Z", to: "2026-01-01T12:30:00Z", want: clickStatsMinuteTable, count: "sum(clicks)"},
+		{name: "all time", want: clickStatsDayTable, count: "sum(clicks)"},
+		{name: "whole hours", from: "2026-01-01T00:00:00Z", to: "2026-01-01T23:59:59Z", want: clickStatsDayTable, count: "sum(clicks)"},
+		{name: "whole minutes", from: "2026-01-01T00:01:00Z", to: "2026-01-01T00:02:59Z", want: clickEventsTable, count: "count()"},
+		{name: "daily timezone", from: "2026-01-01T00:00:00Z", to: "2026-01-01T23:59:59Z", daily: true, want: clickStatsDayTable, count: "sum(clicks)"},
+		{name: "partial start", from: "2026-01-01T00:00:30Z", to: "2026-01-01T23:59:59Z", want: clickEventsTable, count: "count()"},
+		{name: "partial end", from: "2026-01-01T00:00:00Z", to: "2026-01-01T12:30:00Z", want: clickEventsTable, count: "count()"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -168,20 +168,20 @@ func TestClickReportSourcePreservesTimeBoundaries(t *testing.T) {
 	}
 }
 
-func TestReportTimeBoundsCoverWholeMinutesForClicksAndConversions(t *testing.T) {
+func TestReportTimeBoundsRemainExactForClicksAndConversions(t *testing.T) {
 	sql := buildOverviewSQL(Query{
 		From: time.Date(2026, 1, 1, 0, 0, 30, 0, time.UTC),
 		To:   time.Date(2026, 1, 1, 12, 30, 0, 0, time.UTC),
 	})
-	if !strings.Contains(sql, "FROM click_stats_1m") {
-		t.Fatalf("report must use minute aggregate: %s", sql)
+	if !strings.Contains(sql, "FROM click_events") {
+		t.Fatalf("partial hours must use exact events: %s", sql)
 	}
 	for _, want := range []string{
-		"created_at >= '2026-01-01 00:00:00'",
-		"created_at <= '2026-01-01 12:30:59'",
+		"created_at >= '2026-01-01 00:00:30'",
+		"created_at <= '2026-01-01 12:30:00'",
 	} {
 		if strings.Count(sql, want) != 2 {
-			t.Fatalf("expected same minute boundary for clicks and conversions, %q in %s", want, sql)
+			t.Fatalf("expected same exact boundary for clicks and conversions, %q in %s", want, sql)
 		}
 	}
 }

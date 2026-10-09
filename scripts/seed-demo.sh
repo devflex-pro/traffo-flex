@@ -665,7 +665,7 @@ SET mutations_sync = 1;
 
 ALTER TABLE click_events DELETE WHERE startsWith(campaign_id, 'cmp_demo_') OR startsWith(click_id, 'clk_demo_');
 ALTER TABLE click_attribution_lookup DELETE WHERE startsWith(click_id, 'clk_demo_');
-ALTER TABLE click_stats_1m DELETE WHERE startsWith(campaign_id, 'cmp_demo_');
+ALTER TABLE click_stats_1d DELETE WHERE startsWith(campaign_id, 'cmp_demo_');
 ALTER TABLE click_stats_1h DELETE WHERE startsWith(campaign_id, 'cmp_demo_');
 ALTER TABLE conversion_events DELETE WHERE startsWith(campaign_id, 'cmp_demo_') OR startsWith(click_id, 'clk_demo_') OR startsWith(conversion_id, 'cnv_demo_');
 ALTER TABLE attributed_conversion_events DELETE WHERE startsWith(conversion_id, 'cnv_demo_');

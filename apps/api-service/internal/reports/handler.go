@@ -164,6 +164,14 @@ type Query struct {
 	StreamID      string
 	DestinationID string
 	SourceID      string
+	Dimensions    map[string]string
+	EmptyFields   []string
+	Sort          string
+	Order         string
+	Limit         int
+	Offset        int
+	MinClicks     int
+	Profit        string
 }
 
 type IngestionErrorsQuery struct {
@@ -255,14 +263,22 @@ func ParseQuery(r *http.Request) (
 		)
 	}
 
-	from, err := parseOptionalTime(values.Get("from"))
+	from, err := parseReportTime(
+		values.Get("from"),
+		query.Timezone,
+		false,
+	)
 	if err != nil {
 		return Query{}, errors.Join(
 			ErrInvalidQuery,
 			errors.New("invalid from"),
 		)
 	}
-	to, err := parseOptionalTime(values.Get("to"))
+	to, err := parseReportTime(
+		values.Get("to"),
+		query.Timezone,
+		true,
+	)
 	if err != nil {
 		return Query{}, errors.Join(
 			ErrInvalidQuery,
@@ -308,7 +324,116 @@ func ParseQuery(r *http.Request) (
 		return Query{}, filterErr
 	}
 
+	query.Dimensions = make(map[string]string)
+	for _, field := range reportDimensions {
+		value := strings.TrimSpace(values.Get(field))
+		if !validDimensionValue(value) {
+			return Query{}, errors.Join(
+				ErrInvalidQuery,
+				errors.New(field+" is invalid"),
+			)
+		}
+		if value != "" {
+			query.Dimensions[field] = value
+		}
+	}
+	if raw := values.Get("empty"); raw != "" {
+		for _, field := range strings.Split(
+			raw,
+			",",
+		) {
+			if !isReportDimension(field) && field != "campaign_id" && field != "stream_id" && field != "destination_id" && field != "source_id" {
+				return Query{}, errors.Join(
+					ErrInvalidQuery,
+					errors.New("invalid empty dimension"),
+				)
+			}
+			query.EmptyFields = append(
+				query.EmptyFields,
+				field,
+			)
+		}
+	}
+	query.Sort, query.Order = values.Get("sort"), values.Get("order")
+	if query.Sort == "" {
+		query.Sort = "clicks"
+	}
+	if query.Order == "" {
+		query.Order = "desc"
+	}
+	switch query.Sort {
+	case "name", "clicks", "conversions", "revenue", "cost", "profit", "roi", "cr", "epc", "cpc", "cpa":
+	default:
+		return Query{}, errors.Join(
+			ErrInvalidQuery,
+			errors.New("invalid sort"),
+		)
+	}
+	if query.Order != "asc" && query.Order != "desc" {
+		return Query{}, errors.Join(
+			ErrInvalidQuery,
+			errors.New("invalid order"),
+		)
+	}
+	query.Limit = 100
+	for _, field := range []string{"limit", "offset", "min_clicks"} {
+		if raw := values.Get(field); raw != "" {
+			number, err := strconv.Atoi(raw)
+			if err != nil || number < 0 || (field == "limit" && (number < 1 || number > 500)) {
+				return Query{}, errors.Join(
+					ErrInvalidQuery,
+					errors.New("invalid "+field),
+				)
+			}
+			switch field {
+			case "limit":
+				query.Limit = number
+			case "offset":
+				query.Offset = number
+			case "min_clicks":
+				query.MinClicks = number
+			}
+		}
+	}
+	query.Profit = values.Get("profit")
+	if query.Profit != "" && query.Profit != "positive" && query.Profit != "negative" {
+		return Query{}, errors.Join(
+			ErrInvalidQuery,
+			errors.New("invalid profit"),
+		)
+	}
 	return query, nil
+}
+
+func parseReportTime(
+	raw string,
+	timezone string,
+	endOfDay bool,
+) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if len(raw) == len(time.DateOnly) {
+		location, err := time.LoadLocation(timezone)
+		if err != nil {
+			return time.Time{}, err
+		}
+		date, err := time.ParseInLocation(
+			time.DateOnly,
+			raw,
+			location,
+		)
+		if err != nil {
+			return time.Time{}, err
+		}
+		if endOfDay {
+			date = date.AddDate(
+				0,
+				0,
+				1,
+			).Add(-time.Second)
+		}
+		return date, nil
+	}
+	return parseOptionalTime(raw)
 }
 
 func parseOptionalTime(raw string) (
@@ -374,6 +499,15 @@ func (q Query) Filters() map[string]string {
 	if q.SourceID != "" {
 		filters["source_id"] = q.SourceID
 	}
+	for key, value := range q.Dimensions {
+		filters[key] = value
+	}
+	if len(q.EmptyFields) > 0 {
+		filters["empty"] = strings.Join(
+			q.EmptyFields,
+			",",
+		)
+	}
 	return filters
 }
 
@@ -408,6 +542,9 @@ type GroupedReport struct {
 	GroupBy string            `json:"group_by"`
 	Summary Metrics           `json:"summary"`
 	Rows    []ReportRow       `json:"rows"`
+	Total   int               `json:"total"`
+	Limit   int               `json:"limit"`
+	Offset  int               `json:"offset"`
 	Filters map[string]string `json:"filters"`
 }
 
@@ -599,6 +736,43 @@ func (h *Handler) respondGrouped(
 			err,
 		)
 		return
+	}
+	if groupBy == GroupByHealth || groupBy == GroupByTrafficback {
+		table := trafficbackEventsTable
+		if groupBy == GroupByHealth {
+			table = destinationHealthEventsTable
+		}
+		for field := range query.Filters() {
+			if field == "from" || field == "to" || field == "timezone" || field == "empty" {
+				continue
+			}
+			if !supportsFilter(
+				table,
+				field,
+			) {
+				h.respondError(
+					w,
+					http.StatusBadRequest,
+					"unsupported event filter: "+field,
+					ErrInvalidQuery,
+				)
+				return
+			}
+		}
+		for _, field := range query.EmptyFields {
+			if !supportsFilter(
+				table,
+				field,
+			) {
+				h.respondError(
+					w,
+					http.StatusBadRequest,
+					"unsupported event filter: "+field,
+					ErrInvalidQuery,
+				)
+				return
+			}
+		}
 	}
 	report, err := h.repo.Grouped(
 		r.Context(),
